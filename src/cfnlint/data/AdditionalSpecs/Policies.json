@@ -2191,6 +2191,7 @@
     "UpdatePullRequestStatus",
     "UpdatePullRequestTitle",
     "UpdateRepositoryDescription",
+    "UpdateRepositoryEncryptionKey",
     "UpdateRepositoryName",
     "UploadArchive"
    ],
@@ -10866,10 +10867,13 @@
    "ARNRegex": "^arn:aws:app-integrations:.+:.+:.+",
    "Actions": [
     "CreateApplication",
+    "CreateApplicationAssociation",
     "CreateDataIntegration",
     "CreateDataIntegrationAssociation",
     "CreateEventIntegration",
     "CreateEventIntegrationAssociation",
+    "DeleteApplication",
+    "DeleteApplicationAssociation",
     "DeleteDataIntegration",
     "DeleteDataIntegrationAssociation",
     "DeleteEventIntegration",
@@ -10877,6 +10881,7 @@
     "GetApplication",
     "GetDataIntegration",
     "GetEventIntegration",
+    "ListApplicationAssociations",
     "ListApplications",
     "ListDataIntegrationAssociations",
     "ListDataIntegrations",
@@ -12075,6 +12080,31 @@
     "logs:LogGeneratingResourceArns"
    ]
   },
+  "Amazon CloudWatch Network Monitor": {
+   "ARNFormat": "arn:aws:networkmonitor:${Region}:${Account}:${ResourceType}/${ResourcePath}",
+   "ARNRegex": "^arn:aws:networkmonitor:.+:.+:.+",
+   "Actions": [
+    "CreateMonitor",
+    "CreateProbe",
+    "DeleteMonitor",
+    "DeleteProbe",
+    "GetMonitor",
+    "GetProbe",
+    "ListMonitors",
+    "ListTagsForResource",
+    "TagResource",
+    "UntagResource",
+    "UpdateMonitor",
+    "UpdateProbe"
+   ],
+   "HasResource": true,
+   "StringPrefix": "networkmonitor",
+   "conditionKeys": [
+    "aws:RequestTag/${TagKey}",
+    "aws:ResourceTag/${TagKey}",
+    "aws:TagKeys"
+   ]
+  },
   "Amazon CloudWatch Observability Access Manager": {
    "ARNFormat": "arn:aws:oam:${Region}:${Account}:${ResourceType}/${ResourceId}",
    "ARNRegex": "^arn:aws:oam:.+:.+:.+",
@@ -12817,6 +12847,7 @@
     "ResumeContact",
     "ResumeContactRecording",
     "SearchAvailablePhoneNumbers",
+    "SearchContacts",
     "SearchHoursOfOperations",
     "SearchPredefinedAttributes",
     "SearchPrompts",
@@ -12903,6 +12934,7 @@
     "connect:AttributeType",
     "connect:InstanceId",
     "connect:MonitorCapabilities",
+    "connect:SearchContactsByContactAnalysis",
     "connect:SearchTag/${TagKey}",
     "connect:StorageResourceType"
    ]
@@ -15773,6 +15805,7 @@
     "GetMasterAccount",
     "GetMemberDetectors",
     "GetMembers",
+    "GetOrganizationStatistics",
     "GetRemainingFreeTrialDays",
     "GetThreatIntelSet",
     "GetUsageStatistics",
@@ -18807,6 +18840,7 @@
     "DescribeDBProxyEndpoints",
     "DescribeDBProxyTargetGroups",
     "DescribeDBProxyTargets",
+    "DescribeDBRecommendations",
     "DescribeDBSecurityGroups",
     "DescribeDBSnapshotAttributes",
     "DescribeDBSnapshots",
@@ -18831,8 +18865,10 @@
     "DescribeSourceRegions",
     "DescribeTenantDatabases",
     "DescribeValidDBInstanceModifications",
+    "DisableHttpEndpoint",
     "DownloadCompleteDBLogFile",
     "DownloadDBLogFilePortion",
+    "EnableHttpEndpoint",
     "FailoverDBCluster",
     "FailoverGlobalCluster",
     "ListTagsForResource",
@@ -18849,6 +18885,7 @@
     "ModifyDBProxy",
     "ModifyDBProxyEndpoint",
     "ModifyDBProxyTargetGroup",
+    "ModifyDBRecommendation",
     "ModifyDBSnapshot",
     "ModifyDBSnapshotAttribute",
     "ModifyDBSubnetGroup",

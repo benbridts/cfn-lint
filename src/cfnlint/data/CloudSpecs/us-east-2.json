@@ -6618,7 +6618,10 @@
      "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-neptunegraph-graph.html#cfn-neptunegraph-graph-graphname",
      "PrimitiveType": "String",
      "Required": false,
-     "UpdateType": "Immutable"
+     "UpdateType": "Immutable",
+     "Value": {
+      "ValueType": "AWS::NeptuneGraph::Graph.GraphName"
+     }
     },
     "ProvisionedMemory": {
      "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-neptunegraph-graph.html#cfn-neptunegraph-graph-provisionedmemory",
@@ -9779,6 +9782,11 @@
   "AWS::Neptune::DBCluster.DBClusterIdentifier": "CACHED",
   "AWS::Neptune::DBCluster.ServerlessScalingConfiguration.MaxCapacity": "CACHED",
   "AWS::Neptune::DBCluster.ServerlessScalingConfiguration.MinCapacity": "CACHED",
+  "AWS::NeptuneGraph::Graph.GraphName": {
+   "AllowedPatternRegex": "^[a-zA-z][a-zA-Z0-9]*(-[a-zA-Z0-9]+)*$",
+   "StringMax": 63,
+   "StringMin": 1
+  },
   "AWS::NetworkFirewall::Firewall.Description": "CACHED",
   "AWS::NetworkFirewall::Firewall.FirewallName": "CACHED",
   "AWS::NetworkFirewall::Firewall.FirewallPolicyArn": "CACHED",

@@ -3,7 +3,9 @@ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 """
 
+from cfnlint._typing import RuleMatches
 from cfnlint.rules import CloudFormationLintRule, RuleMatch
+from cfnlint.template import Template
 
 
 class Used(CloudFormationLintRule):
@@ -12,10 +14,10 @@ class Used(CloudFormationLintRule):
     id = "W8001"
     shortdesc = "Check if Conditions are Used"
     description = "Making sure the conditions defined are used"
-    source_url = "https://github.com/aws-cloudformation/cfn-python-lint"
+    source_url = "https://github.com/aws-cloudformation/cfn-lint"
     tags = ["conditions"]
 
-    def match(self, cfn):
+    def match(self, cfn: Template) -> RuleMatches:
         matches = []
         ref_conditions = []
 

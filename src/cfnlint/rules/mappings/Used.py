@@ -3,7 +3,10 @@ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 """
 
+from cfnlint._typing import RuleMatches
+from cfnlint.helpers import is_function
 from cfnlint.rules import CloudFormationLintRule, RuleMatch
+from cfnlint.template import Template
 
 
 class Used(CloudFormationLintRule):
@@ -12,14 +15,20 @@ class Used(CloudFormationLintRule):
     id = "W7001"
     shortdesc = "Check if Mappings are Used"
     description = "Making sure the mappings defined are used"
-    source_url = "https://github.com/aws-cloudformation/cfn-python-lint"
+    source_url = "https://github.com/aws-cloudformation/cfn-lint"
     tags = ["mappings"]
 
-    def match(self, cfn):
-        matches = []
+    def match(self, cfn: Template) -> RuleMatches:
+        matches: RuleMatches = []
         findinmap_mappings = []
 
         mappings = cfn.template.get("Mappings", {})
+        k, _ = is_function(mappings)
+        if k == "Fn::Transform":
+            self.logger.debug(
+                (f"Mapping Name has a transform. Disabling check {self.id!r}"),
+            )
+            return matches
 
         if mappings:
             # Get all "FindInMaps" that reference a Mapping
@@ -29,8 +38,10 @@ class Used(CloudFormationLintRule):
                     map_name = maptree[-1][0]
                     if isinstance(map_name, dict):
                         self.logger.debug(
-                            "Mapping Name has a function that can have too many variations. "
-                            "Disabling check %s",
+                            (
+                                "Mapping Name has a function that can have too many"
+                                " variations. Disabling check %s"
+                            ),
                             self.id,
                         )
                         return matches

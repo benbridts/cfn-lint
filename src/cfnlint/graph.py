@@ -5,9 +5,11 @@ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 """
 
+from __future__ import annotations
+
 import logging
 import warnings
-from typing import Any, List
+from typing import Any
 
 import networkx
 import regex as re
@@ -43,20 +45,39 @@ class GraphSettings:
     parameter: NodeSetting
     output: NodeSetting
 
+    def _pydot_string_convert(self, value: str | int) -> str | int:
+        if not isinstance(value, str):
+            return value
+        if ":" in value:
+            return f'"{value}"'
+
+        return value
+
     def subgraph_view(self, graph) -> networkx.MultiDiGraph:
         view = networkx.MultiDiGraph(name="template")
-        resources: List[str] = [
+        resources: list[str] = [
             n for n, v in graph.nodes.items() if v["type"] in ["Resource"]
         ]
-        view.add_nodes_from((n, graph.nodes[n]) for n in resources)
-        view.add_edges_from(
-            (n, nbr, key, d)
-            for n, nbrs in graph.adj.items()
-            if n in resources
-            for nbr, keydict in nbrs.items()
-            if nbr in resources
-            for key, d in keydict.items()
-        )
+
+        # have to add quotes when outputing to dot
+        for resource in resources:
+            node = graph.nodes[resource]
+            node["label"] = self._pydot_string_convert(node["label"])
+            node["type"] = self._pydot_string_convert(node["type"])
+            del node["resource_type"]
+            view.add_node(resource, **node)
+
+        for edge_1, edge_2, edge_data in graph.edges(data=True):
+            if edge_1 in resources and edge_2 in resources:
+                edge_data["source_paths"] = [
+                    self._pydot_string_convert(p) for p in edge_data["source_paths"]
+                ]
+                view.add_edge(
+                    edge_1,
+                    edge_2,
+                    **edge_data,
+                )
+
         view.graph.update(graph.graph)
         return view
 
@@ -74,11 +95,13 @@ class Graph:
     """Models a template as a directed graph of resources"""
 
     settings: GraphSettings
-    __supported_types: List[str] = ["Resources", "Parameters", "Outputs"]
+    __supported_types: list[str] = ["Resources", "Parameters", "Outputs"]
 
     def __init__(self, cfn):
-        """Builds a graph where resources are nodes and edges are explicit (DependsOn) or implicit (Fn::GetAtt, Fn::Sub, Ref)
-        relationships between resources"""
+        """Builds a graph where resources are nodes and edges are
+        explicit (DependsOn) or implicit (Fn::GetAtt, Fn::Sub, Ref)
+        relationships between resources
+        """
 
         self.settings = DefaultGraphSettings()
 
@@ -121,9 +144,12 @@ class Graph:
 
     def _add_outputs(self, cfn: Any) -> None:
         # add all outputs in the template as nodes
-        for output_id in cfn.template.get("Outputs", {}).keys():
+        outputs = cfn.template.get("Outputs", {})
+        if not isinstance(outputs, dict):
+            return
+        for output_id in outputs.keys():
             graph_label = str.format(f'"{output_id}"')
-            self._add_node(output_id, label=graph_label, settings=self.settings.output)
+            self._add_node(output_id, settings=self.settings.output, label=graph_label)
 
     def _add_resources(self, cfn: Any):
         # add all resources in the template as nodes
@@ -133,9 +159,12 @@ class Graph:
             type_val = resourceVals.get("Type", "")
             if not isinstance(type_val, str):
                 continue
-            graph_label = str.format(f'"{resourceId}\\n<{type_val}>"')
+            graph_label = str.format(f"{resourceId}\\n<{type_val}>")
             self._add_node(
-                resourceId, label=graph_label, settings=self.settings.resource
+                resourceId,
+                settings=self.settings.resource,
+                label=graph_label,
+                resource_type=type_val,
             )
             target_ids = resourceVals.get("DependsOn", [])
             if isinstance(target_ids, (list, str)):
@@ -158,7 +187,7 @@ class Graph:
             ref_type, source_id = ref_path[:2]
             source_path = ref_path[2:-2]
             target_id = ref_path[-1]
-            if not ref_type in self.__supported_types:
+            if ref_type not in self.__supported_types:
                 continue
 
             if ref_type in ["Parameters", "Outputs"]:
@@ -171,13 +200,14 @@ class Graph:
 
     def _add_getatts(self, cfn: Any) -> None:
         # add edges for "Fn::GetAtt" tags.
-        # { "Fn::GetAtt" : [ "logicalNameOfResource", "attributeName" ] } or { "!GetAtt" : "logicalNameOfResource.attributeName" }
+        # { "Fn::GetAtt" : [ "logicalNameOfResource", "attributeName" ] }
+        # or { "!GetAtt" : "logicalNameOfResource.attributeName" }
         getatt_paths = cfn.search_deep_keys("Fn::GetAtt")
         for getatt_path in getatt_paths:
             ref_type, source_id = getatt_path[:2]
             source_path = getatt_path[2:-2]
             value = getatt_path[-1]
-            if not ref_type in self.__supported_types:
+            if ref_type not in self.__supported_types:
                 continue
 
             if ref_type in ["Parameters", "Outputs"]:
@@ -201,7 +231,8 @@ class Graph:
                     )
 
     def _add_subs(self, cfn: Any) -> None:
-        # add edges for "Fn::Sub" tags. E.g. { "Fn::Sub": "arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:vpc/${vpc}" }
+        # add edges for "Fn::Sub" tags.
+        # E.g. { "Fn::Sub": "arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:vpc/${vpc}" }
         sub_objs = cfn.search_deep_keys("Fn::Sub")
         for sub_obj in sub_objs:
             sub_parameters = []
@@ -210,7 +241,7 @@ class Graph:
             source_path = sub_obj[2:-2]
             ref_type, source_id = sub_obj[:2]
 
-            if not ref_type in self.__supported_types:
+            if ref_type not in self.__supported_types:
                 continue
 
             if ref_type in ["Parameters", "Outputs"]:
@@ -238,17 +269,14 @@ class Graph:
                             source_id, sub_parameter, source_path, self.settings.ref
                         )
 
-    def _add_node(self, node_id, label, settings):
+    def _add_node(self, node_id, settings, **attr):
         if settings.node_type in ["Parameter", "Output"]:
             node_id = f"{settings.node_type}-{node_id}"
 
-        self.graph.add_node(
-            node_id,
-            label=label,
-            color=settings.color,
-            shape=settings.shape,
-            type=settings.node_type,
-        )
+        attr.setdefault("color", settings.color)
+        attr.setdefault("shape", settings.shape)
+        attr.setdefault("type", settings.node_type)
+        self.graph.add_node(node_id, **attr)
 
     def _add_edge(self, source_id, target_id, source_path, settings):
         self.graph.add_edge(
@@ -261,6 +289,8 @@ class Graph:
 
     def _is_resource(self, cfn, identifier):
         """Check if the identifier is that of a Resource"""
+        if not isinstance(identifier, str):
+            return {}
         return cfn.template.get("Resources", {}).get(identifier, {})
 
     def _find_parameter(self, string):
@@ -276,15 +306,12 @@ class Graph:
         """Export the graph to a file with DOT format"""
         view = self.settings.subgraph_view(self.graph)
         try:
-            import pygraphviz  # pylint: disable=unused-import
-
             networkx.drawing.nx_agraph.write_dot(view, path)
         except ImportError:
             try:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", category=PendingDeprecationWarning)
                     warnings.simplefilter("ignore", category=DeprecationWarning)
-                    import pydot  # pylint: disable=unused-import
 
                     networkx.drawing.nx_pydot.write_dot(view, path)
             except ImportError as e:

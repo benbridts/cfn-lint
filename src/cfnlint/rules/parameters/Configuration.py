@@ -3,10 +3,18 @@ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 """
 
-from cfnlint.rules import CloudFormationLintRule, RuleMatch
+from __future__ import annotations
+
+from typing import Any
+
+import cfnlint.data.schemas.other.parameters
+from cfnlint.jsonschema import Validator
+from cfnlint.jsonschema._keywords import patternProperties
+from cfnlint.jsonschema._keywords_cfn import cfn_type
+from cfnlint.rules.jsonschema.CfnLintJsonSchema import CfnLintJsonSchema, SchemaDetails
 
 
-class Configuration(CloudFormationLintRule):
+class Configuration(CfnLintJsonSchema):
     """Check if Parameters are configured correctly"""
 
     id = "E2001"
@@ -15,151 +23,56 @@ class Configuration(CloudFormationLintRule):
     source_url = "https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/parameters-section-structure.html"
     tags = ["parameters"]
 
-    valid_keys = {
-        "AllowedPattern": {"Type": "String"},
-        "AllowedValues": {
-            "Type": "List",
-            "ItemType": "String",
-        },
-        "ConstraintDescription": {"Type": "String"},
-        "Default": {"Type": "String"},
-        "Description": {"Type": "String"},
-        "MaxLength": {
-            "Type": "Integer",
-            "ValidForTypes": [
-                "String",
-                "AWS::EC2::AvailabilityZone::Name",
-                "AWS::EC2::Image::Id",
-                "AWS::EC2::Instance::Id",
-                "AWS::EC2::KeyPair::KeyName",
-                "AWS::EC2::SecurityGroup::GroupName",
-                "AWS::EC2::SecurityGroup::Id",
-                "AWS::EC2::Subnet::Id",
-                "AWS::EC2::Volume::Id",
-                "AWS::EC2::VPC::Id",
-                "AWS::Route53::HostedZone::Id",
-            ],
-        },
-        "MaxValue": {"Type": "Integer", "ValidForTypes": ["Number"]},
-        "MinLength": {
-            "Type": "Integer",
-            "ValidForTypes": [
-                "String",
-                "AWS::EC2::AvailabilityZone::Name",
-                "AWS::EC2::Image::Id",
-                "AWS::EC2::Instance::Id",
-                "AWS::EC2::KeyPair::KeyName",
-                "AWS::EC2::SecurityGroup::GroupName",
-                "AWS::EC2::SecurityGroup::Id",
-                "AWS::EC2::Subnet::Id",
-                "AWS::EC2::Volume::Id",
-                "AWS::EC2::VPC::Id",
-                "AWS::Route53::HostedZone::Id",
-            ],
-        },
-        "MinValue": {"Type": "Integer", "ValidForTypes": ["Number"]},
-        "NoEcho": {"Type": "Boolean"},
-        "Type": {"Type": "String"},
-    }
+    def __init__(self):
+        """Init"""
+        super().__init__(
+            keywords=["Parameters"],
+            schema_details=SchemaDetails(
+                cfnlint.data.schemas.other.parameters, "configuration.json"
+            ),
+            all_matches=True,
+        )
+        self.rule_set = {
+            "maxLength": "E2011",
+            "maxProperties": "E2010",
+            "minProperties": "E2010",
+            "pattern": "E2003",
+            "enum": "E2002",
+        }
+        self.child_rules = dict.fromkeys(list(self.rule_set.values()))
+        self.validators = {
+            "type": cfn_type,
+            "patternProperties": self._pattern_properties,
+        }
 
-    required_keys = ["Type"]
-
-    def check_type(self, value, path, props):
-        """Check the type and handle recursion with lists"""
-        results = []
-        prop_type = props.get("Type")
-        if value is None:
-            message = (
-                f'Property {"/".join(map(str, path))} should be of type {prop_type}'
+    def _pattern_properties(
+        self, validator: Validator, aP: Any, instance: Any, schema: Any
+    ):
+        # We have to rework pattern properties
+        # to re-add the keyword or we will have an
+        # infinite loop
+        validator = validator.evolve(
+            function_filter=validator.function_filter.evolve(
+                add_cfn_lint_keyword=False,
             )
-            results.append(RuleMatch(path, message))
-            return results
-        try:
-            if prop_type in ["List"]:
-                if isinstance(value, list):
-                    for i, item in enumerate(value):
-                        results.extend(
-                            self.check_type(
-                                item, path[:] + [i], {"Type": props.get("ItemType")}
-                            )
-                        )
-                else:
-                    message = f'Property {"/".join(map(str, path))} should be of type {prop_type}'
-                    results.append(RuleMatch(path, message))
-            if prop_type in ["String"]:
-                if isinstance(value, (dict, list)):
-                    message = f'Property {"/".join(map(str, path))} should be of type {prop_type}'
-                    results.append(RuleMatch(path, message))
-                str(value)
-            elif prop_type in ["Boolean"]:
-                if not isinstance(value, bool):
-                    if value not in ["True", "true", "False", "false"]:
-                        message = f'Property {"/".join(map(str, path))} should be of type {prop_type}'
-                        results.append(RuleMatch(path, message))
-            elif prop_type in ["Integer"]:
-                if isinstance(value, bool):
-                    message = f'Property {"/".join(map(str, path))} should be of type {prop_type}'
-                    results.append(RuleMatch(path, message))
-                else:  # has to be a Double
-                    int(value)
-        except Exception:  # pylint: disable=W0703
-            message = (
-                f'Property {"/".join(map(str, path))} should be of type {prop_type}'
-            )
-            results.append(
-                RuleMatch(
-                    path,
-                    message,
-                )
-            )
+        )
+        yield from patternProperties(validator, aP, instance, schema)
 
-        return results
+    def validate(self, validator: Validator, _: Any, instance: Any, schema: Any):
+        cfn_validator = self.extend_validator(
+            validator=validator,
+            schema=self._schema,
+            context=validator.context,
+        ).evolve(
+            context=validator.context.evolve(strict_types=False),
+            function_filter=validator.function_filter.evolve(
+                add_cfn_lint_keyword=False,
+            ),
+        )
 
-    def match(self, cfn):
-        matches = []
-
-        for paramname, paramvalue in cfn.get_parameters().items():
-            if isinstance(paramvalue, dict):
-                for propname, propvalue in paramvalue.items():
-                    if propname not in self.valid_keys:
-                        message = "Parameter {0} has invalid property {1}"
-                        matches.append(
-                            RuleMatch(
-                                ["Parameters", paramname, propname],
-                                message.format(paramname, propname),
-                            )
-                        )
-                    else:
-                        props = self.valid_keys.get(propname)
-                        prop_path = ["Parameters", paramname, propname]
-                        matches.extend(self.check_type(propvalue, prop_path, props))
-                        # Check that the property is needed for the current type
-                        valid_for = props.get("ValidForTypes")
-                        if valid_for is not None:
-                            if paramvalue.get("Type") not in valid_for:
-                                message = "Parameter {0} has property {1} which is only valid for {2}"
-                                matches.append(
-                                    RuleMatch(
-                                        ["Parameters", paramname, propname],
-                                        message.format(paramname, propname, valid_for),
-                                    )
-                                )
-
-                for reqname in self.required_keys:
-                    if reqname not in paramvalue.keys():
-                        message = "Parameter {0} is missing required property {1}"
-                        matches.append(
-                            RuleMatch(
-                                ["Parameters", paramname],
-                                message.format(paramname, reqname),
-                            )
-                        )
-            else:
-                message = "Parameter {0} is not an object"
-                matches.append(
-                    RuleMatch(
-                        ["Parameters", paramname], message.format(paramname, reqname)
-                    )
-                )
-
-        return matches
+        for err in super()._iter_errors(cfn_validator, instance):
+            # we use enum twice.  Once for the type and once for the property
+            # names.  There are separate error numbers so we do this.
+            if "propertyNames" in err.schema_path and "enum" in err.schema_path:
+                err.rule = self
+            yield err

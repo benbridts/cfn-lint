@@ -1,0 +1,16 @@
+[
+ {
+  "op": "add",
+  "path": "/definitions/ConnectionInput/properties/ConnectionType/enum",
+  "value": [
+   "CUSTOM",
+   "JDBC",
+   "KAFKA",
+   "MARKETPLACE",
+   "MONGODB",
+   "NETWORK",
+   "SALESFORCE",
+   "SFTP"
+  ]
+ }
+]

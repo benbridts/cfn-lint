@@ -3,28 +3,84 @@ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 """
 
-from test.unit.rules import BaseRuleTestCase
+from collections import deque
 
-from cfnlint.rules.functions.SubNotJoin import SubNotJoin  # pylint: disable=E0401
+import pytest
+
+from cfnlint.jsonschema import ValidationError
+from cfnlint.rules.functions.SubNotJoin import SubNotJoin
 
 
-class TestSubNotJoin(BaseRuleTestCase):
-    """Test Rules Get Att"""
+@pytest.fixture(scope="module")
+def rule():
+    rule = SubNotJoin()
+    yield rule
 
-    def setUp(self):
-        """Setup"""
-        super(TestSubNotJoin, self).setUp()
-        self.collection.register(SubNotJoin())
-        self.success_templates = [
-            "test/fixtures/templates/good/functions/subnotjoin.yaml",
-        ]
 
-    def test_file_positive(self):
-        """Test Positive"""
-        self.helper_file_positive()
+@pytest.fixture
+def template():
+    return {
+        "Resources": {
+            "MyResource": {
+                "Type": "AWS::S3::Bucket",
+            },
+        },
+    }
 
-    def test_file_negative(self):
-        """Test failure"""
-        self.helper_file_negative(
-            "test/fixtures/templates/bad/functions/subnotjoin.yaml", 1
-        )
+
+@pytest.mark.parametrize(
+    "name,instance,schema,expected",
+    [
+        (
+            "Valid Fn::Join with proper delimiter",
+            {"Fn::Join": [",", ["", ""]]},
+            {"type": "string"},
+            [],
+        ),
+        (
+            "Invalid Fn::Join with an empty string",
+            {"Fn::Join": ["", ["foo", "bar"]]},
+            {"type": "string"},
+            [
+                ValidationError(
+                    "Prefer using Fn::Sub over Fn::Join with an empty delimiter",
+                    path=deque(["Fn::Join", 0]),
+                    rule=SubNotJoin(),
+                )
+            ],
+        ),
+        (
+            "Valid Fn::Join with a Fn::Sub",
+            {"Fn::Join": ["", ["foo", {"Fn::Sub": ["MyResource", {}]}]]},
+            {"type": "string"},
+            [],
+        ),
+        (
+            "Invalid Fn::Join with a Ref",
+            {"Fn::Join": ["", ["foo", {"Ref": "MyResource"}]]},
+            {"type": "string"},
+            [
+                ValidationError(
+                    "Prefer using Fn::Sub over Fn::Join with an empty delimiter",
+                    path=deque(["Fn::Join", 0]),
+                    rule=SubNotJoin(),
+                )
+            ],
+        ),
+        (
+            "Invalid Fn::Join with a Fn::Sub",
+            {"Fn::Join": ["", ["foo", {"Fn::Sub": "${MyResource}"}]]},
+            {"type": "string"},
+            [
+                ValidationError(
+                    "Prefer using Fn::Sub over Fn::Join with an empty delimiter",
+                    path=deque(["Fn::Join", 0]),
+                    rule=SubNotJoin(),
+                )
+            ],
+        ),
+    ],
+)
+def test_validate(name, instance, schema, expected, rule, validator):
+    errs = list(rule.validate(validator, schema, instance, {}))
+    assert errs == expected, f"Test {name!r} got {errs!r}"

@@ -3,10 +3,16 @@ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 """
 
-from cfnlint.rules import CloudFormationLintRule, RuleMatch
+from typing import Any
+
+import cfnlint.data.schemas.other.conditions
+from cfnlint.helpers import FUNCTION_CONDITIONS
+from cfnlint.jsonschema import Validator
+from cfnlint.rules.jsonschema.CfnLintJsonSchema import CfnLintJsonSchema, SchemaDetails
+from cfnlint.schema.resolver import RefResolver
 
 
-class Configuration(CloudFormationLintRule):
+class Configuration(CfnLintJsonSchema):
     """Check if Conditions are configured correctly"""
 
     id = "E8001"
@@ -15,42 +21,29 @@ class Configuration(CloudFormationLintRule):
     source_url = "https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/conditions-section-structure.html"
     tags = ["conditions"]
 
-    condition_keys = [
-        "Condition",
-        "Fn::And",
-        "Fn::Equals",
-        "Fn::Not",
-        "Fn::Or",
-    ]
+    def __init__(self):
+        super().__init__(
+            keywords=["Conditions"],
+            schema_details=SchemaDetails(
+                cfnlint.data.schemas.other.conditions,
+                "conditions.json",
+            ),
+            all_matches=True,
+        )
 
-    def match(self, cfn):
-        matches = []
+    def validate(
+        self, validator: Validator, conditions: Any, instance: Any, schema: Any
+    ):
+        validator = validator.evolve(
+            context=validator.context.evolve(
+                functions=list(FUNCTION_CONDITIONS) + ["Condition"],
+                resources={},
+                strict_types=False,
+            ),
+            schema=self._schema,
+            resolver=RefResolver.from_schema(
+                self._schema,
+            ),
+        )
 
-        conditions = cfn.template.get("Conditions", {})
-        if conditions:
-            for condname, condobj in conditions.items():
-                if not isinstance(condobj, dict):
-                    message = "Condition {0} has invalid property"
-                    matches.append(
-                        RuleMatch(["Conditions", condname], message.format(condname))
-                    )
-                else:
-                    if len(condobj) != 1:
-                        message = "Condition {0} has too many intrinsic conditions"
-                        matches.append(
-                            RuleMatch(
-                                ["Conditions", condname], message.format(condname)
-                            )
-                        )
-                    else:
-                        for k, _ in condobj.items():
-                            if k not in self.condition_keys:
-                                message = "Condition {0} has invalid property {1}"
-                                matches.append(
-                                    RuleMatch(
-                                        ["Conditions", condname] + [k],
-                                        message.format(condname, k),
-                                    )
-                                )
-
-        return matches
+        yield from self._iter_errors(validator, instance)

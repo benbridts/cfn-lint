@@ -4,29 +4,66 @@ SPDX-License-Identifier: MIT-0
 """
 
 from datetime import datetime
-from test.unit.rules import BaseRuleTestCase
 
-from cfnlint.rules.resources.lmbd.DeprecatedRuntimeEol import (
-    DeprecatedRuntimeEol,  # pylint: disable=E0401
+import pytest
+
+from cfnlint.jsonschema import ValidationError
+from cfnlint.rules.resources.lmbd.DeprecatedRuntimeEol import DeprecatedRuntimeEol
+
+
+@pytest.fixture(scope="module")
+def rule():
+    rule = DeprecatedRuntimeEol()
+    yield rule
+
+
+@pytest.mark.parametrize(
+    "instance,date,expected",
+    [
+        (
+            "nodejs16.x",
+            datetime(2023, 12, 14),
+            [],
+        ),
+        (
+            "foo",  # not existent runtime
+            datetime(2023, 12, 14),
+            [],
+        ),
+        (
+            {},  # wrong type
+            datetime(2023, 12, 14),
+            [],
+        ),
+        (
+            "python3.7",
+            datetime(2023, 12, 4),
+            [
+                ValidationError(
+                    (
+                        "Runtime 'python3.7' was deprecated on "
+                        "'2023-12-04'. Creation was disabled on "
+                        "'2024-01-09' and update on '2025-02-28'. "
+                        "Please consider updating to 'python3.12'"
+                    ),
+                )
+            ],
+        ),
+        (
+            # will be caught by the create rule
+            "python3.7",
+            datetime(2023, 1, 9),
+            [],
+        ),
+        (
+            # will be caught by the update rule
+            "nodejs",
+            datetime(2016, 10, 31),
+            [],
+        ),
+    ],
 )
-
-
-class TestDeprecatedRuntimeEol(BaseRuleTestCase):
-    """Test Lambda Deprecated Runtime usage"""
-
-    def setUp(self):
-        """Setup"""
-        super(TestDeprecatedRuntimeEol, self).setUp()
-        rule = DeprecatedRuntimeEol()
-        self.collection.register(rule)
-        self.collection.rules[rule.id].current_date = datetime(2019, 6, 29)
-
-    def test_file_positive(self):
-        """Test Positive"""
-        self.helper_file_positive()
-
-    def test_file_negative(self):
-        """Test failure"""
-        self.helper_file_negative(
-            "test/fixtures/templates/bad/resources/lambda/runtimes.yaml", 2
-        )
+def test_lambda_runtime(instance, date, expected, rule, validator):
+    rule.current_date = date
+    errs = list(rule.validate(validator, "LambdaRuntime", instance, {}))
+    assert errs == expected, f"Expected {expected} got {errs}"

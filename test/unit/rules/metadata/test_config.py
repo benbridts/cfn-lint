@@ -3,29 +3,59 @@ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 """
 
-from test.unit.rules import BaseRuleTestCase
+from collections import deque
 
-from cfnlint.rules.metadata.Config import Config  # pylint: disable=E0401
+import pytest
+
+from cfnlint.jsonschema import ValidationError
+from cfnlint.rules.metadata.Configuration import Configuration
 
 
-class TestOutputRequired(BaseRuleTestCase):
-    """Test template parameter configurations"""
+@pytest.fixture(scope="module")
+def rule():
+    rule = Configuration()
+    yield rule
 
-    def setUp(self):
-        """Setup"""
-        super(TestOutputRequired, self).setUp()
-        self.collection.register(Config())
 
-    def test_file_positive(self):
-        """Test Positive"""
-        self.helper_file_positive()
-
-    def test_file_negative(self):
-        """Test failure"""
-        self.helper_file_negative("test/fixtures/templates/bad/metadata/config.yaml", 3)
-
-    def test_file_config_null(self):
-        """Test failure"""
-        self.helper_file_negative(
-            "test/fixtures/templates/bad/metadata/config_null.yaml", 1
-        )
+@pytest.mark.parametrize(
+    "name,instance,expected",
+    [
+        (
+            "Valid Metadata",
+            {"Foo": "Bar"},
+            [],
+        ),
+        (
+            "Wrong type",
+            [],
+            [
+                ValidationError(
+                    ("[] is not of type 'object'"),
+                    validator="type",
+                    schema_path=deque(["type"]),
+                    rule=Configuration(),
+                )
+            ],
+        ),
+        (
+            "Invalid with a null",
+            {"foo": None},
+            [
+                ValidationError(
+                    (
+                        "None is not of type "
+                        "'string', 'integer', 'object', "
+                        "'array', 'boolean'"
+                    ),
+                    validator="type",
+                    schema_path=deque(["additionalProperties", "type"]),
+                    path=deque(["foo"]),
+                    rule=Configuration(),
+                )
+            ],
+        ),
+    ],
+)
+def test_validate(name, instance, expected, rule, validator):
+    errs = list(rule.validate(validator, "", instance, {}))
+    assert errs == expected, f"Test {name!r} got {errs!r}"

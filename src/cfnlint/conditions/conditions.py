@@ -3,19 +3,22 @@ Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 """
 
+from __future__ import annotations
+
 import itertools
 import logging
 import traceback
-from typing import Any, Dict, Iterator, List, Tuple
+from typing import Any, Iterator, Set, Tuple
 
 from sympy import And, Implies, Not, Symbol
 from sympy.assumptions.cnf import EncodedCNF
 from sympy.logic.boolalg import BooleanFalse, BooleanTrue
 from sympy.logic.inference import satisfiable
 
+from cfnlint.conditions._condition import ConditionNamed
+from cfnlint.conditions._equals import Equal, EqualParameter
+from cfnlint.conditions._errors import UnknownSatisfisfaction
 from cfnlint.conditions._utils import get_hash
-from cfnlint.conditions.condition import ConditionNamed
-from cfnlint.conditions.equals import Equal
 
 LOGGER = logging.getLogger(__name__)
 
@@ -23,13 +26,11 @@ LOGGER = logging.getLogger(__name__)
 class Conditions:
     """Conditions provides the logic for relating individual condition together"""
 
-    _conditions: Dict[str, ConditionNamed]
-    _parameters: Dict[str, List[str]]  # Dict of parameters with AllowedValues hashed
     _max_scenarios: int = 128  # equivalent to 2^7
 
-    def __init__(self, cfn):
-        self._conditions = {}
-        self._parameters = {}
+    def __init__(self, cfn) -> None:
+        self._conditions: dict[str, ConditionNamed] = {}
+        self._parameters: dict[str, list[str]] = {}
         self._init_conditions(cfn=cfn)
         self._init_parameters(cfn=cfn)
         self._cnf, self._solver_params = self._build_cnf(list(self._conditions.keys()))
@@ -77,14 +78,14 @@ class Conditions:
         return self._conditions.get(name, default)
 
     def _build_cnf(
-        self, condition_names: List[str]
-    ) -> Tuple[EncodedCNF, Dict[str, Any]]:
+        self, condition_names: list[str]
+    ) -> Tuple[EncodedCNF, dict[str, Any]]:
         cnf = EncodedCNF()
 
         # build parameters and equals into solver
-        equal_vars: Dict[str, Symbol] = {}
+        equal_vars: dict[str, Symbol] = {}
 
-        equals: Dict[str, Equal] = {}
+        equals: dict[str, Equal] = {}
         for condition_name in condition_names:
             c_equals = self._conditions[condition_name].equals
             for c_equal in c_equals:
@@ -103,8 +104,9 @@ class Conditions:
                     for param in c_equal.parameters:
                         for e_hash, e_equals in equals.items():
                             if param in e_equals.parameters:
-                                # equivalent to NAND logic. We want to make sure that both equals
-                                # are not both True at the same time
+                                # equivalent to NAND logic. We want to make
+                                # sure that both equals are not both True
+                                # at the same time
                                 cnf.add_prop(
                                     ~(equal_vars[c_equal.hash] & equal_vars[e_hash])
                                 )
@@ -113,7 +115,8 @@ class Conditions:
         # Determine if a set of conditions can never be all false
         allowed_values = self._parameters.copy()
         if allowed_values:
-            # iteration 1 cleans up all the hash values from allowed_values to know if we
+            # iteration 1 cleans up all the hash values
+            # from allowed_values to know if we
             # used them all
             for _, equal_1 in equals.items():
                 for param in equal_1.parameters:
@@ -154,33 +157,59 @@ class Conditions:
         return (cnf, equal_vars)
 
     def build_scenarios(
-        self, condition_names: List[str], region: None = None
-    ) -> Iterator[Dict[str, bool]]:
-        """Given a list of condition names this function will yield scenarios that represent
-        those conditions and there result (True/False)
+        self, conditions: dict[str, Set[bool]], region: str | None = None
+    ) -> Iterator[dict[str, bool]]:
+        """Given a list of condition names this function will
+        yield scenarios that represent those conditions and
+        there result (True/False)
 
         Args:
-            condition_names (List[str]): A list of condition names
+            condition_names (list[str]): A list of condition names
 
         Returns:
-            Iterator[Dict[str, bool]]: yield dict objects of {ConditionName: True/False}
+            Iterator[dict[str, bool]]: yield dict objects of {ConditionName: True/False}
         """
         # nothing to yield if there are no conditions
-        if len(condition_names) == 0:
+        if len(conditions) == 0:
             return
 
+        c_cnf = self._cnf.copy()
+        condition_names = []
+        conditions_set = {}
+        for condition_name, values in conditions.items():
+            if condition_name in self._conditions:
+                if values == {True}:
+                    c_cnf.add_prop(
+                        self._conditions[condition_name].build_true_cnf(
+                            self._solver_params
+                        )
+                    )
+                    conditions_set[condition_name] = True
+                    continue
+                if values == {False}:
+                    c_cnf.add_prop(
+                        self._conditions[condition_name].build_false_cnf(
+                            self._solver_params
+                        )
+                    )
+                    conditions_set[condition_name] = False
+                    continue
+            condition_names.append(condition_name)
+
         try:
-            # build a large matric of True/False options based on the provided conditions
-            scenarios_returned = 0
+            # build a large matric of True/False options
+            # based on the provided conditions
+            scenarios_attempted = 0
             if region:
                 products = itertools.starmap(
                     self.build_scenerios_on_region,
                     itertools.product(condition_names, [region]),
                 )
             else:
-                products = itertools.product([True, False], repeat=len(condition_names))
+                products = itertools.product([True, False], repeat=len(condition_names))  # type: ignore
+
             for p in products:
-                cnf = self._cnf.copy()
+                cnf = c_cnf.copy()
                 params = dict(zip(condition_names, p))
                 for condition_name, opt in params.items():
                     if opt:
@@ -198,26 +227,27 @@ class Conditions:
 
                 # if the scenario can be satisfied then return it
                 if satisfiable(cnf):
-                    yield params
-                    scenarios_returned += 1
+                    yield {**params, **conditions_set}
 
+                scenarios_attempted += 1
                 # On occassions people will use a lot of non-related conditions
                 # this is fail safe to limit the maximum number of responses
-                if scenarios_returned >= self._max_scenarios:
+                if scenarios_attempted >= self._max_scenarios:
                     return
         except KeyError:
             # KeyError is because the listed condition doesn't exist because of bad
             #  formatting or just the wrong condition name
             return
 
-    def check_implies(self, scenarios: Dict[str, bool], implies: str) -> bool:
+    def check_implies(self, scenarios: dict[str, bool], implies: str) -> bool:
         """Based on a bunch of scenario conditions and their Truth/False value
         determine if implies condition is True any time the scenarios are satisfied
         solver, solver_params = self._build_solver(list(scenarios.keys()) + [implies])
 
         Args:
-            scenarios (Dict[str, bool]): A list of condition names and if they are True or False
-            implies: the condition name that we are implying will also be True
+            scenarios (dict[str, bool]): A list of condition names
+            and if they are True or False implies: the condition name that
+            we are implying will also be True
 
         Returns:
             bool: if the implied condition will be True if the scenario is True
@@ -281,8 +311,14 @@ class Conditions:
             return
         cnf_region = self._cnf.copy()
         found_region = False
+
+        # validate the condition name exists
+        # return True/False if it doesn't
         if condition_name not in self._conditions:
+            yield True
+            yield False
             return
+
         for eql in self._conditions[condition_name].equals:
             is_region, equal_region = eql.is_region
             if is_region:
@@ -313,3 +349,70 @@ class Conditions:
         )
         if satisfiable(cnf_test):
             yield False
+
+    def satisfiable(
+        self, conditions: dict[str, bool], parameter_values: dict[str, str]
+    ) -> bool:
+        """Given a list of condition names this function will
+        determine if the conditions are satisfied
+
+        Args:
+            condition_names (list[str]): A list of condition names
+
+        Returns:
+            bool: True if the conditions are satisfied
+
+        Raises:
+            UnknownSatisfisfaction: If we don't know how to satisfy a condition
+        """
+        if not conditions:
+            return True
+
+        cnf = self._cnf.copy()
+        at_least_one_param_found = False
+
+        for condition_name, opt in conditions.items():
+            for c_equals in self._conditions[condition_name].equals:
+                found_params = {}
+                for param, value in parameter_values.items():
+                    ref_hash = get_hash({"Ref": param})
+
+                    for c_equal_param in c_equals.parameters:
+                        if isinstance(c_equal_param, EqualParameter):
+                            if c_equal_param.satisfiable is False:
+                                raise UnknownSatisfisfaction(
+                                    f"Can't resolve satisfaction for {condition_name!r}"
+                                )
+
+                    if ref_hash in c_equals.parameters:
+                        found_params = {ref_hash: value}
+
+                if not found_params:
+                    continue
+
+                at_least_one_param_found = True
+                if c_equals.test(found_params):
+                    cnf.add_prop(Symbol(c_equals.hash))
+                else:
+                    cnf.add_prop(Not(Symbol(c_equals.hash)))
+
+                if opt:
+                    cnf.add_prop(
+                        self._conditions[condition_name].build_true_cnf(
+                            self._solver_params
+                        )
+                    )
+                else:
+                    cnf.add_prop(
+                        self._conditions[condition_name].build_false_cnf(
+                            self._solver_params
+                        )
+                    )
+
+        if at_least_one_param_found is False:
+            return True
+
+        satisfied = satisfiable(cnf, all_models=False)
+        if satisfied is False:
+            return satisfied
+        return True

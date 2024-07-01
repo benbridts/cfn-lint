@@ -1,7 +1,7 @@
 name: Automated Maintenance v0
 on:
   schedule:
-    - cron: '0 4,8,16,20 * * *'
+    - cron: "0 4,8,16,20 * * *"
   workflow_dispatch: # Enables on-demand/manual triggering: https://docs.github.com/en/free-pro-team@latest/actions/managing-workflow-runs/manually-running-a-workflow
 jobs:
   job:
@@ -9,12 +9,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 'main'
+          ref: "v0"
       - uses: actions/setup-python@v5
         with:
           python-version: 3
-      - 
-        id: maintenance
+      - id: maintenance
         run: |
           latest_sam_cli=`curl -s https://api.github.com/repos/aws/aws-sam-cli/releases/latest | jq -r .tag_name | cut -c 2-`
           latest=`curl "https://pypi.org/pypi/aws-sam-cli/$latest_sam_cli/json" -s | jq -r '.info.requires_dist[] | select(contains("aws-sam-translator"))' | cut -c 21-`
@@ -40,7 +39,7 @@ jobs:
           body: |
             - Update CloudFormation specs to ${{ steps.maintenance.outputs.specversion }}
             - Update Specs from pricing data as of ${{ steps.maintenance.outputs.date }}
-            
+
             Automated changes by [create-pull-request](https://github.com/peter-evans/create-pull-request) GitHub action
           delete-branch: true
           title: chore(specs) - Update CloudFormation specs to ${{ steps.maintenance.outputs.specversion }}

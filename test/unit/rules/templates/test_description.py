@@ -3,34 +3,44 @@ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 """
 
-from test.unit.rules import BaseRuleTestCase
+from collections import deque
 
-from cfnlint.rules.templates.Description import Description  # pylint: disable=E0401
+import pytest
+
+from cfnlint.jsonschema import ValidationError
+from cfnlint.rules.templates.Description import Description
 
 
-class TestDescription(BaseRuleTestCase):
-    """Test template limit size"""
+@pytest.fixture(scope="module")
+def rule():
+    rule = Description()
+    yield rule
 
-    def setUp(self):
-        """Setup"""
-        super(TestDescription, self).setUp()
-        self.collection.register(Description())
-        self.success_templates = [
-            "test/fixtures/templates/good/templates/description.yaml"
-        ]
 
-    def test_file_positive(self):
-        """Test Positive"""
-        self.helper_file_positive()
-
-    def test_file_negative(self):
-        """Test failure"""
-        self.helper_file_negative(
-            "test/fixtures/templates/bad/templates/description.yaml", 1
-        )
-
-    def test_file_description_null(self):
-        """Test failure"""
-        self.helper_file_negative(
-            "test/fixtures/templates/bad/templates/description_null.yaml", 1
-        )
+@pytest.mark.parametrize(
+    "name,instance,expected",
+    [
+        (
+            "Valid description",
+            "My Description",
+            [],
+        ),
+        (
+            "Invalid type",
+            {},
+            [
+                ValidationError(
+                    ("{} is not of type 'string'"),
+                    rule=Description(),
+                    schema_path=deque(["type"]),
+                    validator="type",
+                )
+            ],
+        ),
+    ],
+)
+def test_validate(name, instance, expected, rule, validator):
+    errors = list(rule.validate(validator, False, instance, {}))
+    # we use error counts in this one as the instance types are
+    # always changing so we aren't going to hold ourselves up by that
+    assert errors == expected, f"Test {name!r} got {errors!r}"

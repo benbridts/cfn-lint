@@ -5,15 +5,23 @@ SPDX-License-Identifier: MIT-0
 
 import regex as re
 
+from cfnlint._typing import RuleMatches
 from cfnlint.rules import CloudFormationLintRule, RuleMatch
+from cfnlint.template import Template
 
 
 class HardCodedArnProperties(CloudFormationLintRule):
-    """Checks Resources if ARNs use correctly placed Pseudo Parameters instead of hardcoded Partition, Region, and Account Number"""
+    """
+    Checks Resources if ARNs use correctly placed Pseudo Parameters
+    instead of hardcoded Partition, Region, and Account Number
+    """
 
     id = "I3042"
     shortdesc = "ARNs should use correctly placed Pseudo Parameters"
-    description = "Checks Resources if ARNs use correctly placed Pseudo Parameters instead of hardcoded Partition, Region, and Account Number"
+    description = (
+        "Checks Resources if ARNs use correctly placed Pseudo Parameters instead of"
+        " hardcoded Partition, Region, and Account Number"
+    )
     source_url = ""
     tags = ["resources"]
     regex = re.compile(
@@ -71,12 +79,8 @@ class HardCodedArnProperties(CloudFormationLintRule):
         results.extend(self._match_values(cfn.template.get("Globals", {}), []))
         return results
 
-    def match(self, cfn):
-        matches = []
-
-        # Skip rule if CDK
-        if cfn.is_cdk_template():
-            return matches
+    def match(self, cfn: Template) -> RuleMatches:
+        matches: RuleMatches = []
 
         transforms = cfn.transform_pre["Transform"]
         transforms = transforms if isinstance(transforms, list) else [transforms]
@@ -90,24 +94,35 @@ class HardCodedArnProperties(CloudFormationLintRule):
             path = ["Resources"] + parameter_string_path[:-1]
             candidate = parameter_string_path[-1]
 
+            # ruff: noqa: E501
             # !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
             # is valid even with aws as the account #.  This handles empty string
             if self.config["partition"] and not re.match(
                 r"^\$\{\w+}|\$\{AWS::Partition}|$", candidate[0]
             ):
-                # or not re.match(r'^(\$\{\w+}|\$\{AWS::Region}|)$', candidate[1]) or not re.match(r'^\$\{\w+}|\$\{AWS::AccountId}|aws|$', candidate[2]):
-                message = "ARN in Resource {0} contains hardcoded Partition in ARN or incorrectly placed Pseudo Parameters"
+                # or not re.match(r'^(\$\{\w+}|\$\{AWS::Region}|)$',candidate[1])
+                # or not re.match(r'^\$\{\w+}|\$\{AWS::AccountId}|aws|$', candidate[2]):
+                message = (
+                    "ARN in Resource {0} contains hardcoded Partition in ARN or"
+                    " incorrectly placed Pseudo Parameters"
+                )
                 matches.append(RuleMatch(path, message.format(path[1])))
             if self.config["region"] and not re.match(
                 r"^(\$\{\w+}|\$\{AWS::Region}|)$", candidate[1]
             ):
                 # or  or not re.match(r'^\$\{\w+}|\$\{AWS::AccountId}|aws|$', candidate[2]):
-                message = "ARN in Resource {0} contains hardcoded Region in ARN or incorrectly placed Pseudo Parameters"
+                message = (
+                    "ARN in Resource {0} contains hardcoded Region in ARN or"
+                    " incorrectly placed Pseudo Parameters"
+                )
                 matches.append(RuleMatch(path, message.format(path[1])))
             if self.config["accountId"] and not re.match(
                 r"^\$\{\w+}|\$\{AWS::AccountId}|aws|$", candidate[2]
             ):
-                message = "ARN in Resource {0} contains hardcoded AccountId in ARN or incorrectly placed Pseudo Parameters"
+                message = (
+                    "ARN in Resource {0} contains hardcoded AccountId in ARN or"
+                    " incorrectly placed Pseudo Parameters"
+                )
                 matches.append(RuleMatch(path, message.format(path[1])))
 
         return matches

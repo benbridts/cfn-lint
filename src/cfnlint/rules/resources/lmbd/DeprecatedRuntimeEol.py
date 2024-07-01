@@ -3,14 +3,18 @@ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 """
 
+from __future__ import annotations
+
 from datetime import datetime
+from typing import Any
 
-from cfnlint.rules import RuleMatch
-from cfnlint.rules.resources.lmbd.DeprecatedRuntime import DeprecatedRuntime
+from cfnlint.data import AdditionalSpecs
+from cfnlint.helpers import load_resource
+from cfnlint.jsonschema import ValidationError, ValidationResult, Validator
+from cfnlint.rules.jsonschema.CfnLintKeyword import CfnLintKeyword
 
 
-class DeprecatedRuntimeEol(DeprecatedRuntime):
-    """Check if EOL Lambda Function Runtimes are used"""
+class DeprecatedRuntimeEol(CfnLintKeyword):
 
     id = "W2531"
     shortdesc = "Check if EOL Lambda Function Runtimes are used"
@@ -22,27 +26,37 @@ class DeprecatedRuntimeEol(DeprecatedRuntime):
     )
     tags = ["resources", "lambda", "runtime"]
 
-    def check_runtime(self, runtime_value, path):
-        """Check if the given runtime is valid"""
-        matches = []
+    def __init__(self):
+        """Init"""
+        super().__init__(["Resources/AWS::Lambda::Function/Properties/Runtime"])
+        self.current_date = datetime.today()
+        self.deprecated_runtimes = load_resource(
+            AdditionalSpecs, "LmbdRuntimeLifecycle.json"
+        )
 
-        runtime = self.deprecated_runtimes.get(runtime_value)
-        if runtime:
-            if (
-                datetime.strptime(runtime["eol"], "%Y-%m-%d") < self.current_date
-                and datetime.strptime(runtime["deprecated"], "%Y-%m-%d")
-                > self.current_date
-            ):
-                message = "EOL runtime ({0}) specified. Runtime is EOL since {1} and updating will be disabled at {2}. Please consider updating to {3}"
-                matches.append(
-                    RuleMatch(
-                        path,
-                        message.format(
-                            runtime_value,
-                            runtime["eol"],
-                            runtime["deprecated"],
-                            runtime["successor"],
-                        ),
-                    )
-                )
-        return matches
+    def validate(
+        self, validator: Validator, v: Any, runtime: Any, schema: dict[str, Any]
+    ) -> ValidationResult:
+        if not validator.is_type(runtime, "string"):
+            return
+
+        runtime_data = self.deprecated_runtimes.get(runtime)
+        if not runtime_data:
+            return
+        if (
+            datetime.strptime(runtime_data["deprecated"], "%Y-%m-%d")
+            <= self.current_date
+            and datetime.strptime(runtime_data["create-block"], "%Y-%m-%d")
+            > self.current_date
+            and datetime.strptime(runtime_data["update-block"], "%Y-%m-%d")
+            > self.current_date
+        ):
+            yield ValidationError(
+                (
+                    f"Runtime {runtime!r} was deprecated on "
+                    f"{runtime_data['deprecated']!r}. Creation was disabled on "
+                    f"{runtime_data['create-block']!r} and update on "
+                    f"{runtime_data['update-block']!r}. Please consider "
+                    f"updating to {runtime_data['successor']!r}"
+                ),
+            )

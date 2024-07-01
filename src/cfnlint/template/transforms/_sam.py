@@ -17,7 +17,7 @@ from samtranslator.translator.translator import Translator
 
 from cfnlint.data import Serverless
 from cfnlint.decode.utils import convert_dict
-from cfnlint.helpers import format_json_string, load_resource
+from cfnlint.helpers import load_resource
 from cfnlint.template.transforms._types import TransformResult
 
 LOGGER = logging.getLogger("cfnlint")
@@ -89,9 +89,9 @@ class Transform:
                         if v in self._template.get("Parameters"):
                             self._parameters[v] = "Alias"
 
-        for _, resource in all_resources.items():
-            resource_type = resource.get("Type")
-            resource_dict = resource.get("Properties")
+        for _, rsc in all_resources.items():
+            resource_type = rsc.get("Type")
+            resource_dict = rsc.get("Properties")
 
             if resource_type == "AWS::Serverless::Function":
                 if resource_dict.get("PackageType") == "Image":
@@ -158,38 +158,37 @@ class Transform:
                 )
             )
 
-            LOGGER.info(
-                "Transformed template: \n%s", format_json_string(self._template)
-            )
         except InvalidDocumentException as e:
             # pylint: disable=import-outside-toplevel
             from cfnlint.match import Match  # pylint: disable=cyclic-import
-            from cfnlint.rules import TransformError  # pylint: disable=cyclic-import
+            from cfnlint.rules.errors import (  # pylint: disable=cyclic-import
+                TransformError,
+            )
 
             message = "Error transforming template: {0}"
             for cause in e.causes:
                 matches.append(
-                    Match(
-                        1,
-                        1,
-                        1,
-                        1,
-                        self._filename,
-                        TransformError(),
-                        message.format(cause.message),
+                    Match.create(
+                        filename=self._filename,
+                        rule=TransformError(),
+                        message=message.format(cause.message),
                     )
                 )
         except Exception as e:  # pylint: disable=W0703
             # pylint: disable=import-outside-toplevel
             from cfnlint.match import Match  # pylint: disable=cyclic-import
-            from cfnlint.rules import TransformError  # pylint: disable=cyclic-import
+            from cfnlint.rules.errors import (  # pylint: disable=cyclic-import
+                TransformError,
+            )
 
             LOGGER.debug("Error transforming template: %s", str(e))
             LOGGER.debug("Stack trace: %s", e, exc_info=True)
             message = "Error transforming template: {0}"
             matches.append(
-                Match(
-                    1, 1, 1, 1, self._filename, TransformError(), message.format(str(e))
+                Match.create(
+                    filename=self._filename,
+                    rule=TransformError(),
+                    message=message.format(str(e)),
                 )
             )
 

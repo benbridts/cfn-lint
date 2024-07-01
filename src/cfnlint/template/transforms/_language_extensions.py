@@ -5,11 +5,14 @@ SPDX-License-Identifier: MIT-0
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import random
 import string
+import sys
 from copy import deepcopy
-from typing import Any, Iterable, List, Mapping, MutableMapping, Optional, Tuple
+from typing import Any, Iterator, Mapping, MutableMapping, Tuple
 
 import regex as re
 
@@ -27,19 +30,19 @@ _SCALAR_TYPES = (str, int, float, bool)
 
 
 class _ResolveError(Exception):
-    def __init__(self, message: str, key: str) -> None:
+    def __init__(self, message: str, key: Any) -> None:
         super().__init__(message)
         self.key = key
 
 
 class _ValueError(Exception):
-    def __init__(self, message: str, key: str) -> None:
+    def __init__(self, message: str, key: Any) -> None:
         super().__init__(message)
         self.key = key
 
 
 class _TypeError(Exception):
-    def __init__(self, message: str, key: str) -> None:
+    def __init__(self, message: str, key: Any) -> None:
         super().__init__(message)
         self.key = key
 
@@ -49,9 +52,10 @@ def language_extension(cfn: Any) -> TransformResult:
     try:
         return transform.transform(cfn)
     except (_ValueError, _TypeError, _ResolveError) as e:
+        LOGGER.debug(e, exc_info=True)
         # pylint: disable=import-outside-toplevel
         from cfnlint.match import Match  # pylint: disable=cyclic-import
-        from cfnlint.rules import TransformError  # pylint: disable=cyclic-import
+        from cfnlint.rules.errors import TransformError  # pylint: disable=cyclic-import
 
         message = "Error transforming template: {0}"
         if hasattr(e.key, "start_mark"):
@@ -68,31 +72,28 @@ def language_extension(cfn: Any) -> TransformResult:
             em_column = 1
 
         return [
-            Match(
-                sm_line,
-                sm_column,
-                em_line,
-                em_column,
-                cfn.filename,
-                TransformError(),
-                message.format(str(e)),
+            Match.create(
+                linenumber=sm_line,
+                columnnumber=sm_column,
+                linenumberend=em_line,
+                columnnumberend=em_column,
+                filename=cfn.filename,
+                rule=TransformError(),
+                message=message.format(str(e)),
             )
         ], None
     except Exception as e:  # pylint: disable=broad-exception-caught
+        LOGGER.debug(e, exc_info=True)
         # pylint: disable=import-outside-toplevel
         from cfnlint.match import Match  # pylint: disable=cyclic-import
-        from cfnlint.rules import TransformError  # pylint: disable=cyclic-import
+        from cfnlint.rules.errors import TransformError  # pylint: disable=cyclic-import
 
         message = "Error transforming template: {0}"
         return [
-            Match(
-                1,
-                1,
-                1,
-                1,
-                cfn.filename,
-                TransformError(),
-                message.format(str(e)),
+            Match.create(
+                filename=cfn.filename,
+                rule=TransformError(),
+                message=message.format(str(e)),
             )
         ], None
 
@@ -157,16 +158,16 @@ class _Transform:
                     try:
                         mapping = _ForEachValueFnFindInMap(get_hash(v), v)
                         map_value = mapping.value(cfn, params, True, False)
-                        # if we get None this means its all strings but couldn't be resolved
-                        # we will pass this forward
-                        if map_value is None:
-                            continue
                         # if we can resolve it we will return it
                         if isinstance(map_value, tuple([list]) + _SCALAR_TYPES):
                             return map_value
                     except Exception as e:  # pylint: disable=broad-exception-caught
-                        # We couldn't resolve the FindInMap so we are going to leave it as it is
+                        # We couldn't resolve the FindInMap so we are going to
+                        # leave it as it is
                         LOGGER.debug("Transform and Fn::FindInMap error: %s", {str(e)})
+                    for i, el in enumerate(v):
+                        v[i] = self._walk(el, params, cfn)
+                    obj[k] = v
                 elif k == "Ref":
                     if isinstance(v, str):
                         if v in params:
@@ -193,7 +194,9 @@ class _Transform:
         return obj
 
     def _replace_string_params(
-        self, s: str, params: Mapping[str, Any]
+        self,
+        s: str,
+        params: Mapping[str, Any],
     ) -> Tuple[bool, str]:
         pattern = r"(\$|&){[a-zA-Z0-9\.:]+}"
         if not re.search(pattern, s):
@@ -201,6 +204,17 @@ class _Transform:
 
         new_s = deepcopy(s)
         for k, v in params.items():
+            if isinstance(v, dict):
+                if sys.version_info.major == 3 and sys.version_info.minor > 8:
+                    v = (
+                        hashlib.md5(
+                            json.dumps(v).encode("utf-8"), usedforsecurity=False
+                        )
+                        .digest()
+                        .hex()[0:4]
+                    )
+                else:
+                    v = hashlib.md5(json.dumps(v).encode("utf-8")).digest().hex()[0:4]
             new_s = re.sub(rf"\$\{{{k}\}}", v, new_s)
             new_s = re.sub(rf"\&\{{{k}\}}", re.sub("[^0-9a-zA-Z]+", "", v), new_s)
 
@@ -236,7 +250,7 @@ class _ForEachValue:
 
     # pylint: disable=unused-argument
     def value(
-        self, cfn, params: Optional[Mapping[str, Any]] = None, only_params: bool = False
+        self, cfn, params: Mapping[str, Any] | None = None, only_params: bool = False
     ):
         return self._value
 
@@ -263,14 +277,19 @@ class _FnFindInMapDefaultValue(_ForEachValue):
                 raise _ValueError(
                     "Fn::FindInMap parameter only supports 'DefaultValue'", value
                 )
+            if isinstance(v, list):
+                self._value = [_ForEachValue.create(a) for a in v]
+                return
             self._value = _ForEachValue.create(v)
 
     def value(
-        self, cfn, params: Optional[Mapping[str, Any]] = None, only_params: bool = False
+        self, cfn, params: Mapping[str, Any] | None = None, only_params: bool = False
     ):
         if params is None:
             params = {}
 
+        if isinstance(self._value, list):
+            return [v.value(cfn, params, only_params) for v in self._value]
         return self._value.value(cfn, params, only_params)
 
 
@@ -296,7 +315,7 @@ class _ForEachValueFnFindInMap(_ForEachValue):
     def value(
         self,
         cfn: Any,
-        params: Optional[Mapping[str, Any]] = None,
+        params: Mapping[str, Any] | None = None,
         only_params: bool = False,
         default_on_resolver_failure: bool = True,
     ) -> Any:
@@ -345,7 +364,7 @@ class _ForEachValueFnFindInMap(_ForEachValue):
 
         if mapping:
             try:
-                t_map[1].value(cfn)
+                t_map[1].value(cfn, params, only_params)
             except _ResolveError:
                 try:
                     t_map[2].value(cfn)
@@ -364,6 +383,15 @@ class _ForEachValueFnFindInMap(_ForEachValue):
             except _ResolveError as e:
                 if len(self._map) == 4 and default_on_resolver_failure:
                     return self._map[3].value(cfn, params, only_params)
+                # no default value and map 1 exists
+                try:
+                    for _, v in mapping.get(
+                        t_map[1].value(cfn, params, only_params), {}
+                    ).items():
+                        if isinstance(v, list):
+                            return v
+                except _ResolveError:
+                    pass
                 raise _ResolveError("Can't resolve Fn::FindInMap", self._obj) from e
 
         if len(self._map) == 4 and default_on_resolver_failure:
@@ -384,7 +412,7 @@ class _ForEachValueRef(_ForEachValue):
     def value(
         self,
         cfn: Any,
-        params: Optional[Mapping[str, Any]] = None,
+        params: Mapping[str, Any] | None = None,
         only_params: bool = False,
     ) -> Any:
         if params is None:
@@ -442,6 +470,8 @@ class _ForEachValueRef(_ForEachValue):
         if not p:
             raise _ResolveError("Can't resolve Fn::Ref", self._obj)
         t = p.get("Type", "String")
+        if t.startswith("AWS::SSM::Parameter"):
+            raise _ResolveError("Can't resolve Fn::Ref", self._obj)
         default = p.get("Default")
         if default:
             if "List" in t:
@@ -453,14 +483,17 @@ class _ForEachValueRef(_ForEachValue):
                 return [x.strip() for x in allowed_values[0].split(",")]
             return allowed_values[0]
 
+        if "List" in t:
+            return [{"Fn::Select": [0, {"Ref": v}]}, {"Fn::Select": [1, {"Ref": v}]}]
+
         raise _ResolveError("Can't resolve Fn::Ref", self._obj)
 
 
 class _ForEachCollection:
     def __init__(self, obj: Any) -> None:
-        self._collection: Optional[List[_ForEachValue]] = None
+        self._collection: list[_ForEachValue] | None = None
         self._obj = obj
-        self._fn: Optional[_ForEachValue] = None
+        self._fn: _ForEachValue | None = None
         if isinstance(obj, list):
             self._collection = []
             self._string = obj
@@ -473,8 +506,8 @@ class _ForEachCollection:
         raise _TypeError("Collection must be a list or an object", obj)
 
     def values(
-        self, cfn: Any, collection_cache: MutableMapping[str, str]
-    ) -> Iterable[str]:
+        self, cfn: Any, collection_cache: MutableMapping[str, Any]
+    ) -> Iterator[str | dict[Any, Any]]:
         if self._collection:
             for item in self._collection:
                 try:
@@ -490,11 +523,14 @@ class _ForEachCollection:
                 if values:
                     if isinstance(values, list):
                         for value in values:
-                            if isinstance(value, str):
+                            if isinstance(value, (str, dict)):
                                 yield value
                             else:
                                 raise _ValueError(
-                                    f"Fn::ForEach collection value must be a {_SCALAR_TYPES!r}",
+                                    (
+                                        "Fn::ForEach collection value "
+                                        f"must be a {_SCALAR_TYPES!r}"
+                                    ),
                                     self._obj,
                                 )
                         return
@@ -541,6 +577,6 @@ class _ForEach:
         self._collection = _ForEachCollection(value[1])
         self._output = _ForEachOutput(value[2])
 
-    def items(self, cfn: Any) -> Iterable[Tuple[str, str]]:
+    def items(self, cfn: Any) -> Iterator[str | dict[str, str]]:
         items = self._collection.values(cfn, self._collection_cache)
         yield from iter(items)

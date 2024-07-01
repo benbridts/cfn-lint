@@ -5,16 +5,19 @@ SPDX-License-Identifier: MIT-0
 
 import json
 import subprocess
-import sys
-from test.testlib.testcase import BaseTestCase
+import unittest
+from pathlib import Path
+from typing import Any, Dict, List
 
-import cfnlint.core
+from cfnlint.config import configure_logging
+from cfnlint.decode import cfn_yaml
+from cfnlint.runner import Runner
 
 
-class BaseCliTestCase(BaseTestCase):
+class BaseCliTestCase(unittest.TestCase):
     """Used for Testing CLI"""
 
-    scenarios = []
+    scenarios: List[Dict[str, Any]] = []
 
     def setUp(self):
         """Common Settings"""
@@ -32,6 +35,9 @@ class BaseCliTestCase(BaseTestCase):
             if results_filename and not expected_results:
                 with open(results_filename, encoding="utf-8") as json_data:
                     expected_results = json.load(json_data)
+
+            for result in expected_results:
+                result["Filename"] = str(Path(result.get("Filename")))
 
             try:
                 result = subprocess.check_output(
@@ -79,11 +85,11 @@ class BaseCliTestCase(BaseTestCase):
                     ),
                 )
 
-    def run_module_integration_scenarios(self, rules):
+    def run_module_integration_scenarios(self, config):
         """Test using cfnlint as a module integrated into another package"""
 
-        cfnlint.core.configure_logging(None)
-        regions = ["us-east-1"]
+        configure_logging(None, False)
+
         for scenario in self.scenarios:
             filename = scenario.get("filename")
             results_filename = scenario.get("results_filename")
@@ -93,15 +99,19 @@ class BaseCliTestCase(BaseTestCase):
                 with open(results_filename, encoding="utf-8") as json_data:
                     expected_results = json.load(json_data)
 
-            template = cfnlint.decode.cfn_yaml.load(filename)
+            for result in expected_results:
+                result["Filename"] = str(Path(result.get("Filename")))
 
-            matches = cfnlint.core.run_checks(filename, template, rules, regions)
+            template = cfn_yaml.load(filename)
+
+            runner = Runner(config)
+            matches = list(runner.validate_template(filename, template))
 
             # Only check that the error count matches as the formats are different
             self.assertEqual(
                 len(expected_results),
                 len(matches),
                 "Expected {} failures, got {} on {}".format(
-                    len(expected_results), len(matches), filename
+                    len(expected_results), matches, filename
                 ),
             )

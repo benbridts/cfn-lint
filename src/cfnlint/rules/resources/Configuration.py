@@ -3,13 +3,16 @@ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 """
 
+from typing import Any
+
+import cfnlint.data.schemas.other.resources
 import cfnlint.helpers
-from cfnlint.helpers import REGISTRY_SCHEMAS
-from cfnlint.rules import CloudFormationLintRule, RuleMatch
-from cfnlint.template import Template
+from cfnlint.jsonschema import ValidationResult, Validator
+from cfnlint.jsonschema._keywords import patternProperties
+from cfnlint.rules.jsonschema.CfnLintJsonSchema import CfnLintJsonSchema, SchemaDetails
 
 
-class Configuration(CloudFormationLintRule):
+class Configuration(CfnLintJsonSchema):
     """Check Base Resource Configuration"""
 
     id = "E3001"
@@ -17,171 +20,50 @@ class Configuration(CloudFormationLintRule):
     description = (
         "Making sure the basic CloudFormation resources are properly configured"
     )
-    source_url = "https://github.com/aws-cloudformation/cfn-python-lint"
+    source_url = "https://github.com/aws-cloudformation/cfn-lint"
     tags = ["resources"]
 
-    def _check_resource(self, cfn: Template, resource_name, resource_values):
-        """Check Resource"""
+    def __init__(self):
+        super().__init__(
+            keywords=["Resources"],
+            schema_details=SchemaDetails(
+                cfnlint.data.schemas.other.resources, "configuration.json"
+            ),
+            all_matches=True,
+        )
+        self.validators = {
+            "maxProperties": None,
+            "propertyNames": None,
+            "patternProperties": self._pattern_properties,
+        }
+        self.rule_set = {
+            "maxProperties": "E3010",
+            "propertyNames": "E3011",
+        }
+        self.child_rules = dict.fromkeys(list(self.rule_set.values()))
 
-        valid_attributes = [
-            "Condition",
-            "CreationPolicy",
-            "DeletionPolicy",
-            "DependsOn",
-            "Metadata",
-            "Properties",
-            "Type",
-            "UpdatePolicy",
-            "UpdateReplacePolicy",
-        ]
-
-        valid_custom_attributes = [
-            "Condition",
-            "DeletionPolicy",
-            "DependsOn",
-            "Metadata",
-            "Properties",
-            "Type",
-            "UpdateReplacePolicy",
-            "Version",
-        ]
-
-        matches = []
-        if not isinstance(resource_values, dict):
-            message = "Resource not properly configured at {0}"
-            matches.append(
-                RuleMatch(["Resources", resource_name], message.format(resource_name))
+    def _pattern_properties(
+        self, validator: Validator, aP: Any, instance: Any, schema: Any
+    ):
+        # We have to rework pattern properties
+        # to re-add the keyword or we will have an
+        # infinite loop
+        validator = validator.evolve(
+            function_filter=validator.function_filter.evolve(
+                add_cfn_lint_keyword=True,
             )
-            return matches
+        )
 
-        # validate condition is a string
-        condition = resource_values.get("Condition", "")
-        if not isinstance(condition, str):
-            message = "Condition for resource {0} should be a string"
-            matches.append(
-                RuleMatch(
-                    ["Resources", resource_name, "Condition"],
-                    message.format(resource_name),
-                )
-            )
+        yield from patternProperties(validator, aP, instance, schema)
 
-        resource_type = resource_values.get("Type", "")
-        if not isinstance(resource_type, str):
-            message = "Type has to be a string at {0}"
-            matches.append(
-                RuleMatch(
-                    ["Resources", resource_name],
-                    message.format("/".join(["Resources", resource_name])),
-                )
-            )
-            return matches
+    def validate(
+        self, validator: Validator, keywords: Any, instance: Any, schema: Any
+    ) -> ValidationResult:
 
-        # Type is valid continue analysis
-        if (
-            resource_type.startswith("Custom::")
-            or resource_type == "AWS::CloudFormation::CustomResource"
-        ):
-            check_attributes = valid_custom_attributes
-        else:
-            check_attributes = valid_attributes
+        cfn_validator = self.extend_validator(
+            validator=validator,
+            schema=self._schema,
+            context=validator.context.evolve(),
+        )
 
-        for property_key, _ in resource_values.items():
-            if property_key not in check_attributes:
-                message = "Invalid resource attribute {0} for resource {1}"
-                matches.append(
-                    RuleMatch(
-                        ["Resources", resource_name, property_key],
-                        message.format(property_key, resource_name),
-                    )
-                )
-
-        if not resource_type:
-            message = "Type not defined for resource {0}"
-            matches.append(
-                RuleMatch(["Resources", resource_name], message.format(resource_name))
-            )
-        elif not isinstance(resource_type, str):
-            message = "Type has to be a string at {0}"
-            matches.append(
-                RuleMatch(
-                    ["Resources", resource_name],
-                    message.format("/".join(["Resources", resource_name])),
-                )
-            )
-        else:
-            self.logger.debug("Check resource types by region...")
-            for region, specs in cfnlint.helpers.RESOURCE_SPECS.items():
-                if region in cfn.regions:
-                    if condition:
-                        if False in cfn.conditions.build_scenerios_on_region(
-                            condition, region
-                        ):
-                            continue
-                    if resource_type not in specs[
-                        "ResourceTypes"
-                    ] and resource_type not in [
-                        s["typeName"] for s in REGISTRY_SCHEMAS
-                    ]:
-                        if not resource_type.startswith(
-                            ("Custom::", "AWS::Serverless::")
-                        ) and not resource_type.endswith("::MODULE"):
-                            message = "Invalid or unsupported Type {0} for resource {1} in {2}"
-                            matches.append(
-                                RuleMatch(
-                                    ["Resources", resource_name, "Type"],
-                                    message.format(
-                                        resource_type, resource_name, region
-                                    ),
-                                )
-                            )
-
-        if "Properties" not in resource_values:
-            resource_spec = cfnlint.helpers.RESOURCE_SPECS[cfn.regions[0]]
-            if resource_type in resource_spec["ResourceTypes"]:
-                properties_spec = resource_spec["ResourceTypes"][resource_type][
-                    "Properties"
-                ]
-                # pylint: disable=len-as-condition
-                if len(properties_spec) > 0:
-                    required = 0
-                    for _, property_spec in properties_spec.items():
-                        if property_spec.get("Required", False):
-                            required += 1
-                    if required > 0:
-                        if (
-                            resource_type == "AWS::CloudFormation::WaitCondition"
-                            and "CreationPolicy" in resource_values.keys()
-                        ):
-                            self.logger.debug(
-                                "Exception to required properties section as CreationPolicy is defined."
-                            )
-                        else:
-                            message = "Properties not defined for resource {0}"
-                            matches.append(
-                                RuleMatch(
-                                    ["Resources", resource_name],
-                                    message.format(resource_name),
-                                )
-                            )
-
-        return matches
-
-    def match(self, cfn):
-        matches = []
-
-        resources = cfn.template.get("Resources", {})
-        if not isinstance(resources, dict):
-            message = "Resource not properly configured"
-            matches.append(RuleMatch(["Resources"], message))
-        else:
-            for resource_name, resource_values in cfn.template.get(
-                "Resources", {}
-            ).items():
-                self.logger.debug(
-                    "Validating resource %s base configuration", resource_name
-                )
-                matches.extend(
-                    self._check_resource(cfn, resource_name, resource_values)
-                )
-
-        return matches
+        yield from self._iter_errors(cfn_validator, instance)

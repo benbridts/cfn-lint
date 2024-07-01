@@ -5,8 +5,10 @@ SPDX-License-Identifier: MIT-0
 
 import regex as re
 
+from cfnlint._typing import RuleMatches
 from cfnlint.helpers import REGEX_DYN_REF, REGEX_DYN_REF_SSM
 from cfnlint.rules import CloudFormationLintRule, RuleMatch
+from cfnlint.template import Template
 
 
 class Password(CloudFormationLintRule):
@@ -20,7 +22,7 @@ class Password(CloudFormationLintRule):
     source_url = "https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/best-practices.html#creds"
     tags = ["parameters", "passwords", "security", "dynamic reference"]
 
-    def match(self, cfn):
+    def match(self, cfn: Template) -> RuleMatches:
         """Check CloudFormation Password Parameters"""
 
         matches = []
@@ -36,7 +38,7 @@ class Password(CloudFormationLintRule):
             "PasswordParam",
         ]
 
-        parameters = cfn.get_parameter_names()
+        parameters = list(cfn.template.get("Parameters", {}).keys())
         fix_params = []
         for password_property in password_properties:
             # Build the list of refs
@@ -52,10 +54,16 @@ class Password(CloudFormationLintRule):
                 if isinstance(obj, (str)):
                     if re.match(REGEX_DYN_REF, obj):
                         if re.match(REGEX_DYN_REF_SSM, obj):
-                            message = f'Password should use a secure dynamic reference for {"/".join(map(str, tree[:-1]))}'
+                            message = (
+                                "Password should use a secure dynamic reference for"
+                                f" {'/'.join(map(str, tree[:-1]))}"
+                            )
                             matches.append(RuleMatch(tree[:-1], message))
                     else:
-                        message = f'Password shouldn\'t be hardcoded for {"/".join(map(str, tree[:-1]))}'
+                        message = (
+                            "Password shouldn't be hardcoded for"
+                            f" {'/'.join(map(str, tree[:-1]))}"
+                        )
                         matches.append(RuleMatch(tree[:-1], message))
                 elif isinstance(obj, dict):
                     if len(obj) == 1:
@@ -76,11 +84,17 @@ class Password(CloudFormationLintRule):
                                             {"Name": value, "Use": password_property}
                                         )
                     else:
-                        message = f'Inappropriate map found for password on {"/".join(map(str, tree[:-1]))}'
+                        message = (
+                            "Inappropriate map found for password on"
+                            f" {'/'.join(map(str, tree[:-1]))}"
+                        )
                         matches.append(RuleMatch(tree[:-1], message))
 
         for paramname in fix_params:
-            message = f'Parameter {paramname["Name"]} used as {paramname["Use"]}, therefore NoEcho should be True'
+            message = (
+                f'Parameter {paramname["Name"]} used as {paramname["Use"]}, therefore'
+                " NoEcho should be True"
+            )
             tree = ["Parameters", paramname["Name"]]
             matches.append(RuleMatch(tree, message))
         return matches

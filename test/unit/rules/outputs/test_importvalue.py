@@ -3,28 +3,62 @@ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 """
 
-from test.unit.rules import BaseRuleTestCase
+from collections import deque
 
-from cfnlint.rules.outputs.ImportValue import ImportValue  # pylint: disable=E0401
+import pytest
+
+from cfnlint.jsonschema import ValidationError
+from cfnlint.rules.outputs.ImportValue import ImportValue
 
 
-class TestOutputImportValue(BaseRuleTestCase):
-    """Test Output ImportValue"""
+@pytest.fixture(scope="module")
+def rule():
+    rule = ImportValue()
+    yield rule
 
-    def setUp(self):
-        """Setup"""
-        super(TestOutputImportValue, self).setUp()
-        self.collection.register(ImportValue())
-        self.success_templates = [
-            "test/fixtures/templates/good/outputs/importvalue.yaml",
-        ]
 
-    def test_file_positive(self):
-        """Test Positive"""
-        self.helper_file_positive()
-
-    def test_file_negative(self):
-        """Test failure"""
-        self.helper_file_negative(
-            "test/fixtures/templates/bad/outputs/configuration.yaml", 1
-        )
+@pytest.mark.parametrize(
+    "name,instance,path,schema,expected",
+    [
+        (
+            "Valid Fn::ImportValue",
+            {"Fn::ImportValue": "Export"},
+            {
+                "path": ["Resources", "MyResource", "Properties", "BucketName"],
+            },
+            {"type": "string"},
+            [],
+        ),
+        (
+            "Short path",
+            {"Fn::ImportValue": "Export"},
+            {
+                "path": ["Outputs"],
+            },
+            {"type": "object"},
+            [],
+        ),
+        (
+            "Invalid Fn::ImportValue in Output",
+            {"Fn::ImportValue": "Export"},
+            {
+                "path": ["Outputs", "MyOutput", "Value"],
+            },
+            {"type": "string"},
+            [
+                ValidationError(
+                    (
+                        "The output value {'Fn::ImportValue': 'Export'} "
+                        "is an import from another output"
+                    ),
+                    path=deque(["Fn::ImportValue"]),
+                    rule=ImportValue(),
+                )
+            ],
+        ),
+    ],
+    indirect=["path"],
+)
+def test_validate(name, instance, path, schema, expected, rule, validator):
+    errs = list(rule.validate(validator, schema, instance, {}))
+    assert errs == expected, f"Test {name!r} got {errs!r}"

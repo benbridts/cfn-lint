@@ -3,30 +3,84 @@ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 """
 
-from test.unit.rules import BaseRuleTestCase
+from collections import deque
 
+import pytest
+
+from cfnlint.jsonschema import ValidationError
 from cfnlint.rules.resources.certificatemanager.DomainValidationOptions import (
     DomainValidationOptions,
 )
 
 
-class TestDomainValidationOptions(BaseRuleTestCase):
-    """Test ValidationDomainOptions Configuration"""
+@pytest.fixture(scope="module")
+def rule():
+    rule = DomainValidationOptions()
+    yield rule
 
-    def setUp(self):
-        """Setup"""
-        super(TestDomainValidationOptions, self).setUp()
-        self.collection.register(DomainValidationOptions())
 
-    def test_file_positive(self):
-        """Test Positive"""
-        self.helper_file_positive_template(
-            "test/fixtures/templates/good/resources/certificatemanager/domain_validation_options.yaml"
-        )
+@pytest.mark.parametrize(
+    "instance,expected",
+    [
+        (
+            {
+                "DomainName": "foo.bar",
+                "ValidationDomain": "bar",
+            },
+            [],
+        ),
+        (
+            [],  # wrong type
+            [],
+        ),
+        (
+            {
+                "DomainName": "foo.bar",
+                "ValidationDomain": "foo.bar",
+            },
+            [],
+        ),
+        (
+            {
+                "DomainName": "foo.bar",
+                "ValidationDomain": {"Ref": "pValidationDomain"},
+            },
+            [],
+        ),
+        (
+            {
+                "DomainName": {"Ref": "pDomainName"},
+                "ValidationDomain": "bar",
+            },
+            [],
+        ),
+        (
+            {
+                "DomainName": "foobar",
+                "ValidationDomain": "bar",
+            },
+            [
+                ValidationError(
+                    "'bar' must be a superdomain of 'foobar'",
+                    path=deque(["DomainName"]),
+                )
+            ],
+        ),
+        (
+            {
+                "DomainName": "foo.foo",
+                "ValidationDomain": "bar",
+            },
+            [
+                ValidationError(
+                    "'bar' must be a superdomain of 'foo.foo'",
+                    path=deque(["DomainName"]),
+                )
+            ],
+        ),
+    ],
+)
+def test_validate(instance, expected, rule, validator):
+    errs = list(rule.validate(validator, "", instance, {}))
 
-    def test_file_negative_invalid_validationdomain(self):
-        """Test failure"""
-        self.helper_file_negative(
-            "test/fixtures/templates/bad/resources/certificatemanager/domain_validation_options.yaml",
-            2,
-        )
+    assert errs == expected, f"Expected {expected} got {errs}"

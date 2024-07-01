@@ -5,131 +5,67 @@ SPDX-License-Identifier: MIT-0
 
 from __future__ import annotations
 
+import functools
 import logging
 from copy import deepcopy
-from typing import Any, Dict, List, Union
+from typing import TYPE_CHECKING, Any, Iterator
 
 import regex as re
 
 import cfnlint.conditions
 import cfnlint.helpers
+from cfnlint._typing import CheckValueFn, Path
+from cfnlint.context import create_context_for_template
+from cfnlint.decode.node import dict_node, list_node
 from cfnlint.graph import Graph
 from cfnlint.match import Match
+from cfnlint.template.getatts import GetAtts
 from cfnlint.template.transforms import Transform
+
+if TYPE_CHECKING:
+    from cfnlint.rules import RuleMatch
 
 LOGGER = logging.getLogger(__name__)
 
 
-def resolve_pointer(obj, pointer) -> Dict:
-    """Find the elements at the end of a Cfn pointer
-
-    Args:
-        obj (dict): the root schema used for searching for the pointer
-        pointer (str): the pointer using / to separate levels
-    Returns:
-        Dict: returns the object from the pointer
-    """
-    json_pointer = _SchemaPointer(obj, pointer)
-    return json_pointer.resolve()
-
-
-class _SchemaPointer:
-    def __init__(self, obj: dict, pointer: str) -> None:
-        self.obj = obj
-        self.parts = pointer.split("/")[1:]
-
-    def resolve(self) -> Dict:
-        """Find the elements at the end of a Cfn pointer
-
-        Args:
-        Returns:
-            Dict: returns the object from the pointer
-        """
-        obj = self.obj
-        for part in self.parts:
-            try:
-                obj = self.walk(obj, part)
-            except KeyError as e:
-                raise e
-
-        if "*" in self.parts:
-            return {"type": "array", "items": obj}
-
-        return obj
-
-    # pylint: disable=too-many-return-statements
-    def walk(self, obj: Dict, part: str) -> Any:
-        """Walks one step in doc and returns the referenced part
-
-        Args:
-            obj (dict): the object to evaluate for the part
-            part (str): the string representation of the part
-        Returns:
-            Dict: returns the object at the part
-        """
-        assert hasattr(obj, "__getitem__"), f"invalid document type {type(obj)}"
-
-        try:
-            # using a test for typeName as that is a root schema property
-            if part == "properties" and obj.get("typeName"):
-                return obj[part]
-            if (
-                obj.get("properties")
-                and part != "definitions"
-                and not obj.get("typeName")
-            ):
-                return obj["properties"][part]
-            # arrays have a * in the path
-            if part == "*" and obj.get("type") == "array":
-                return obj.get("items")
-            return obj[part]
-
-        except KeyError as e:
-            # CFN JSON pointers can go down $ref paths so lets do that if we can
-            if obj.get("$ref"):
-                try:
-                    return resolve_pointer(self.obj, f"{obj.get('$ref')}/{part}")
-                except KeyError as ke:
-                    raise ke
-            if obj.get("items", {}).get("$ref"):
-                ref = obj.get("items", {}).get("$ref")
-                try:
-                    return resolve_pointer(self.obj, f"{ref}/{part}")
-                except KeyError as ke:
-                    raise ke
-            if obj.get("oneOf"):
-                for oneOf in obj.get("oneOf"):  # type: ignore
-                    try:
-                        return self.walk(oneOf, part)
-                    except KeyError:
-                        pass
-
-                raise KeyError(f"No oneOf matches for {part}") from e
-            raise e
-
-
 class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attributes
-    """Class for a CloudFormation template"""
+    """
+    Class representing a CloudFormation template.
 
-    # pylint: disable=dangerous-default-value
-    def __init__(self, filename, template, regions=["us-east-1"]):
+    This class provides methods to access and manipulate various parts of the template,
+    such as resources, parameters, conditions, and transformations. It also includes
+    utility methods for checking conditions, resolving references, and more.
+
+    Attributes:
+        regions (list[str]): A list of AWS regions associated with the template.
+        filename (str | None): The filename of the template file, if available.
+        template (dict[str, Any]): The dictionary representing the CloudFormation template.
+        sections (list[str]): A list of CloudFormation template sections.
+        transform_pre (dict[str, Any]): A dictionary containing pre-processed transformation data.
+        conditions (Conditions): An instance of the Conditions class used for managing conditions.
+        graph (Graph): An instance of the Graph class used for representing the template structure.
+    """
+
+    def __init__(
+        self,
+        filename: str | None,
+        template: dict[str, Any],
+        regions: list[str] | None = None,
+    ):
+        """Initialize a Template instance.
+
+        Args:
+            filename (str | None): The filename of the template file, if available.
+            template (dict[str, Any]): The dictionary representing the CloudFormation template.
+            regions (list[str] | None): A list of AWS regions associated with the template.
+        """
+        if regions is None:
+            self.regions = [cfnlint.helpers.REGION_PRIMARY]
+        else:
+            self.regions = regions
         self.filename = filename
         self.template = template
-        self.regions = regions
-        self.sections = [
-            "AWSTemplateFormatVersion",
-            "Description",
-            "Metadata",
-            "Parameters",
-            "Mappings",
-            "Conditions",
-            "Transform",
-            "Hooks",
-            "Resources",
-            "Outputs",
-            "Rules",
-        ]
-        self.transform_pre = {}
+        self.transform_pre: dict[str, Any] = {}
         self.transform_pre["Globals"] = {}
         self.transform_pre["Ref"] = self.search_deep_keys("Ref")
         self.transform_pre["Fn::Sub"] = self.search_deep_keys("Fn::Sub")
@@ -140,8 +76,7 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
         )
 
         self.conditions = cfnlint.conditions.Conditions(self)
-        self.__cache_search_deep_class = {}
-        self.graph: Union[Graph, None] = None
+        self.graph = None
         try:
             self.graph = Graph(self)
         except KeyError as err:
@@ -154,6 +89,9 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
         except Exception as err:  # pylint: disable=broad-except
             LOGGER.info("Encountered unknown error while building graph: %s", err)
 
+        self.context = create_context_for_template(self)
+        self.search_deep_keys = functools.lru_cache()(self.search_deep_keys)  # type: ignore
+
     def __deepcopy__(self, memo):
         cls = self.__class__
         result = cls.__new__(cls)
@@ -162,26 +100,44 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
             setattr(result, k, deepcopy(v, memo))
         return result
 
-    def transform(self) -> List[Match]:
+    def _cache_clear(self):
+        self.search_deep_keys.cache_clear()
+
+    def transform(self) -> list[Match]:
         """
-        Transform the template
+        Transform the template.
+
+        Returns:
+            list[Match]: A list of Match objects representing the transformed template.
         """
         transform = Transform()
-        return transform.transform(self)
+        results = transform.transform(self)
+        self._cache_clear()
+        return results
 
-    def build_graph(self):
+    def build_graph(self) -> None:
         """Generates a DOT representation of the template"""
-        path = self.filename + ".dot"
+        filename = self.filename or "cfn-lint"
+        path = filename + ".dot"
+        if not self.graph:
+            return
         try:
             self.graph.to_dot(path)
             LOGGER.info("DOT representation of the graph written to %s", path)
         except ImportError:
             LOGGER.error(
-                "Could not write the graph in DOT format. Please install either `pygraphviz` or `pydot` modules."
+                (
+                    "Could not write the graph in DOT format. "
+                    "Please install either `pygraphviz` or `pydot` modules."
+                )
             )
 
-    def has_language_extensions_transform(self):
-        """Check if the template has language extensions transform declared"""
+    def has_language_extensions_transform(self) -> bool:
+        """Check if the template has the AWS::LanguageExtensions transform declared.
+
+        Returns:
+            bool: True if the AWS::LanguageExtensions transform is declared, False otherwise.
+        """
         lang_extensions_transform = "AWS::LanguageExtensions"
         transform_declaration = self.transform_pre["Transform"]
         transform_type = (
@@ -191,8 +147,12 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
         )
         return bool(lang_extensions_transform in transform_type)
 
-    def has_serverless_transform(self):
-        """Check if the template has SAM transform declared"""
+    def has_serverless_transform(self) -> bool:
+        """Check if the template has the AWS::Serverless-2016-10-31 transform declared.
+
+        Returns:
+            bool: True if the AWS::Serverless-2016-10-31 transform is declared, False otherwise.
+        """
         lang_extensions_transform = "AWS::Serverless-2016-10-31"
         transform_declaration = self.transform_pre["Transform"]
         transform_type = (
@@ -203,7 +163,11 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
         return bool(lang_extensions_transform in transform_type)
 
     def is_cdk_template(self) -> bool:
-        """Check if the template was created by CDK"""
+        """Check if the template was created by the AWS Cloud Development Kit (CDK).
+
+        Returns:
+            bool: True if the template was created by CDK, False otherwise.
+        """
         resources = self.template.get("Resources")
         if not isinstance(resources, dict):
             return False
@@ -219,12 +183,18 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
 
         return False
 
-    def get_resources(self, resource_type=[]):
+    def get_resources(
+        self, resource_type: list[str] | str = []
+    ) -> dict[str, dict[str, Any]]:
+        """Get the resources in the template.
+
+        Args:
+            resource_type (list[str] | str): An optional list or string of resource types to filter by.
+
+        Returns:
+            dict[str, dict[str, Any]]: A dictionary containing the resources, where the keys are resource names
+                and the values are the resource dictionaries.
         """
-        Get Resources
-        Filter on type when specified
-        """
-        LOGGER.debug("Get resources from template...")
         resources = self.template.get("Resources", {})
         if not isinstance(resources, dict):
             return {}
@@ -241,19 +211,42 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
 
         return results
 
-    def get_parameters(self):
-        LOGGER.debug("Get parameters from template...")
-        parameters = self.template.get("Parameters", {})
-        if not parameters:
-            return {}
+    def get_resource_children(
+        self, resource_name: str, types: list[str] | None = None
+    ) -> Iterator[str]:
+        """Get the resource children for a given resource name.
 
-        return parameters
+        Args:
+            resource_name (str): The name of the resource.
+            types (list[str] | None): An optional list of resource types to filter by.
 
-    def get_parameters_valid(self):
-        LOGGER.debug("Get parameters from template...")
+        Yields:
+            str: The name of each resource child.
+        """
+        types = types or []
+
+        if self.graph:
+            for node_name in self.graph.graph.predecessors(resource_name):
+                node = self.graph.graph.nodes[node_name]
+                if node["type"] != "Resource":
+                    continue
+
+                if types:
+                    if node["resource_type"] in types:
+                        yield node_name
+                else:
+                    yield node_name
+
+    def get_parameters_valid(self) -> dict[str, dict[str, Any]]:
+        """Get the valid parameters in the template.
+
+        Returns:
+            dict[str, dict[str, Any]]: A dictionary containing the valid parameters, where the keys are parameter names
+                and the values are the parameter dictionaries.
+        """
         result = {}
         if isinstance(self.template.get("Parameters"), dict):
-            parameters = self.template.get("Parameters")
+            parameters = self.template.get("Parameters", {})
             for parameter_name, parameter_value in parameters.items():
                 if isinstance(parameter_value, dict):
                     if isinstance(parameter_value.get("Type"), str):
@@ -261,21 +254,13 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
 
         return result
 
-    def get_outputs_valid(self):
-        LOGGER.debug("Get outputs from template...")
-        result = {}
-        if isinstance(self.template.get("Outputs"), dict):
-            parameters = self.template.get("Outputs")
-            for parameter_name, parameter_value in parameters.items():
-                if isinstance(parameter_value, dict):
-                    if isinstance(parameter_value.get("Value"), (str, dict)):
-                        result[parameter_name] = parameter_value
+    def get_modules(self) -> dict[str, dict[str, Any]]:
+        """Get the modules in the template.
 
-        return result
-
-    def get_modules(self):
-        """Get Modules"""
-        LOGGER.debug("Get modules from template...")
+        Returns:
+            dict[str, dict[str, Any]]: A dictionary containing the modules, where the keys are module names
+                and the values are the module dictionaries.
+        """
         resources = self.template.get("Resources", {})
         if not resources:
             return {}
@@ -290,35 +275,13 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
 
         return results
 
-    def get_mappings(self):
-        LOGGER.debug("Get mapping from template...")
-        mappings = self.template.get("Mappings", {})
-        if not mappings:
-            return {}
+    def get_valid_refs(self) -> cfnlint.helpers.RegexDict:
+        """Get a dictionary of valid references in the template.
 
-        return mappings
-
-    def get_resource_names(self):
-        LOGGER.debug("Get the names of all resources from template...")
-        results = []
-        resources = self.template.get("Resources", {})
-        if isinstance(resources, dict):
-            for resourcename, _ in resources.items():
-                results.append(resourcename)
-
-        return results
-
-    def get_parameter_names(self):
-        LOGGER.debug("Get names of all parameters from template...")
-        results = []
-        parameters = self.template.get("Parameters", {})
-        if isinstance(parameters, dict):
-            for parametername, _ in parameters.items():
-                results.append(parametername)
-
-        return results
-
-    def get_valid_refs(self):
+        Returns:
+            cfnlint.helpers.RegexDict: A dictionary containing valid references, where the keys are reference names
+                and the values are dictionaries with information about the reference type and source.
+        """
         results = cfnlint.helpers.RegexDict()
         parameters = self.template.get("Parameters", {})
         if parameters:
@@ -333,6 +296,8 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
         if resources:
             for name, value in resources.items():
                 resource_type = value.get("Type", "")
+                if not isinstance(resource_type, str):
+                    continue
                 if resource_type.endswith("::MODULE"):
                     element = {}
                     element["Type"] = "MODULE"
@@ -344,125 +309,34 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
                     element["From"] = "Resources"
                     results[name] = element
 
-        for pseudoparam in cfnlint.PSEUDOPARAMS:
+        for pseudoparam in cfnlint.helpers.PSEUDOPARAMS:
             element = {}
             element["Type"] = "Pseudo"
-            element["From"] = "Pseduo"
+            element["From"] = "Pseudo"
             results[pseudoparam] = element
         return results
 
-    # pylint: disable=too-many-locals
-    def get_valid_getatts(self):
-        resourcetypes = cfnlint.helpers.RESOURCE_SPECS["us-east-1"].get("ResourceTypes")
-        propertytypes = cfnlint.helpers.RESOURCE_SPECS["us-east-1"].get("PropertyTypes")
-        results = {}
-        resources = self.template.get("Resources", {})
+    def get_valid_getatts(self) -> GetAtts:
+        """Get an instance of GetAtts containing valid GetAtt references in the template.
 
-        astrik_string_types = ("AWS::CloudFormation::Stack",)
-        astrik_unknown_types = (
-            "Custom::",
-            "AWS::Serverless::",
-            "AWS::CloudFormation::CustomResource",
-        )
+        Returns:
+            GetAtts: An instance of GetAtts containing valid GetAtt references.
+        """
+        results = GetAtts(self.regions)
 
-        def build_output_string(resource_type, property_name):
-            prop = propertytypes.get(f"{resource_type}.{property_name}")
-            if prop is None:
-                yield None, None
-            else:
-                for k, v in prop.get("Properties", {}).items():
-                    t = v.get("Type")
-                    if t:
-                        for item in build_output_string(resource_type, v):
-                            yield f"{k}.{item[0]}", item[1]
-                    else:
-                        yield k, v.get("PrimitiveType")
-
-        for name, value in resources.items():
-            if "Type" in value:
-                valtype = value["Type"]
-                if isinstance(valtype, str):
-                    if valtype.startswith(astrik_string_types):
-                        LOGGER.debug(
-                            "Cant build an appropriate getatt list from %s", valtype
-                        )
-                        results[name] = {"*": {"PrimitiveItemType": "String"}}
-                    elif valtype.startswith(astrik_unknown_types) or valtype.endswith(
-                        "::MODULE"
-                    ):
-                        LOGGER.debug(
-                            "Cant build an appropriate getatt list from %s", valtype
-                        )
-                        results[name] = {"*": {}}
-                    else:
-                        if value["Type"] in resourcetypes:
-                            if "Attributes" in resourcetypes[valtype]:
-                                results[name] = {}
-                                for attname, attvalue in resourcetypes[valtype][
-                                    "Attributes"
-                                ].items():
-                                    if "Type" in attvalue:
-                                        if attvalue.get("Type") in ["List", "Map"]:
-                                            element = {}
-                                            element.update(attvalue)
-                                            results[name][attname] = element
-                                        else:
-                                            for item in build_output_string(
-                                                value["Type"], attname
-                                            ):
-                                                if item[0] is None:
-                                                    continue
-                                                element = {"PrimitiveType": item[1]}
-                                                results[name][
-                                                    f"{attname}.{item[0]}"
-                                                ] = element
-                                    else:
-                                        element = {}
-                                        element.update(attvalue)
-                                        results[name][attname] = element
-                        for schema in cfnlint.helpers.REGISTRY_SCHEMAS:
-                            if value["Type"] == schema["typeName"]:
-                                results[name] = {}
-                                for ro_property in schema.get("readOnlyProperties", []):
-                                    try:
-                                        item = resolve_pointer(schema, ro_property)
-                                    except KeyError:
-                                        continue
-                                    item_type = item["type"]
-                                    _type = None
-                                    primitive_type = None
-                                    if item_type == "string":
-                                        primitive_type = "String"
-                                    elif item_type == "number":
-                                        primitive_type = "Double"
-                                    elif item_type == "integer":
-                                        primitive_type = "Integer"
-                                    elif item_type == "boolean":
-                                        primitive_type = "Boolean"
-                                    elif item_type == "array":
-                                        _type = "List"
-                                        primitive_type = "String"
-
-                                    ro_property = ro_property.replace(
-                                        "/properties/", ""
-                                    )
-                                    results[name][".".join(ro_property.split("/"))] = {}
-                                    if _type:
-                                        results[name][".".join(ro_property.split("/"))][
-                                            "Type"
-                                        ] = _type
-                                        results[name][".".join(ro_property.split("/"))][
-                                            "PrimitiveItemType"
-                                        ] = primitive_type
-                                    elif primitive_type:
-                                        results[name][".".join(ro_property.split("/"))][
-                                            "PrimitiveType"
-                                        ] = primitive_type
+        for name, value in self.context.resources.items():
+            results.add(name, value.type)
 
         return results
 
-    def get_directives(self):
-        results = {}
+    def get_directives(self) -> dict[str, list[str]]:
+        """Get the directives (ignore_checks) in the template.
+
+        Returns:
+            dict[str, list[str]]: A dictionary containing directives, where the keys are directive names
+                and the values are lists of resource names associated with the directive.
+        """
+        results: dict[str, list[str]] = {}
         resources = self.get_resources()
         if resources:
             for resource_name, resource_values in resources.items():
@@ -479,127 +353,22 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
                         results[ignore_rule_id].append(resource_name)
         return results
 
-    # pylint: disable=too-many-locals
-    def _get_sub_resource_properties(self, keys, properties, path):
-        """Used for recursive handling of properties in the keys"""
-        LOGGER.debug("Get Sub Resource Properties from %s", keys)
-        if not keys:
-            result = {}
-            result["Path"] = path
-            result["Value"] = properties
-            return [result]
-        if isinstance(properties, dict):
-            key = keys.pop(0)
-            for key_name, key_value in properties.items():
-                if key_name == key:
-                    results = self._get_sub_resource_properties(
-                        keys[:], key_value, path[:] + [key_name]
-                    )
-                    if results:
-                        return results
-        elif isinstance(properties, list):
-            matches = []
-            for index, item in enumerate(properties):
-                results = None
-                if isinstance(item, dict):
-                    if len(item) == 1:
-                        for sub_key, sub_value in item.items():
-                            if sub_key in cfnlint.helpers.CONDITION_FUNCTIONS:
-                                cond_values = self.get_condition_values(sub_value)
-                                results = []
-                                for cond_value in cond_values:
-                                    result_path = (
-                                        path[:] + [index, sub_key] + cond_value["Path"]
-                                    )
-                                    results.extend(
-                                        self._get_sub_resource_properties(
-                                            keys[:], cond_value["Value"], result_path
-                                        )
-                                    )
-                            elif sub_key == "Ref":
-                                if sub_value != "AWS::NoValue":
-                                    results = self._get_sub_resource_properties(
-                                        keys[:], sub_value, path + [sub_key]
-                                    )
-                            else:
-                                results = self._get_sub_resource_properties(
-                                    keys[:], sub_value, path + [sub_key]
-                                )
-                    else:
-                        results = self._get_sub_resource_properties(
-                            keys[:], item, path + [index]
-                        )
-                if isinstance(results, dict):
-                    matches.append(results)
-                elif isinstance(results, list):
-                    matches.extend(results)
-            return matches
-
-        return []
-
-    def get_resource_properties(self, keys):
-        """Filter keys of template"""
-        LOGGER.debug("Get Properties from a resource: %s", keys)
-        matches = []
-        resourcetype = keys.pop(0)
-        for resource_name, resource_value in self.get_resources(resourcetype).items():
-            path = ["Resources", resource_name, "Properties"]
-            properties = resource_value.get("Properties")
-            if properties:
-                results = self._get_sub_resource_properties(keys[:], properties, path)
-                matches.extend(results)
-
-        return matches
-
     # pylint: disable=dangerous-default-value
-    def _search_deep_class(self, searchClass, cfndict, path):
-        """Search deep for keys and get their values"""
-        keys = []
-        if isinstance(cfndict, searchClass):
-            keys.append((path[:], cfndict))
+    def _search_deep_keys(self, searchText: str | re.Pattern, cfndict, path: Path):
+        """Search deep for keys and get their values.
 
-        if isinstance(cfndict, dict):
-            for key in cfndict:
-                keys.extend(
-                    self._search_deep_class(searchClass, cfndict[key], path[:] + [key])
-                )
-        elif isinstance(cfndict, list):
-            for index, item in enumerate(cfndict):
-                keys.extend(
-                    self._search_deep_class(searchClass, item, path[:] + [index])
-                )
+        Args:
+            searchText (str | re.Pattern): The text or regular expression pattern to search for.
+            cfndict (Any): The dictionary or list to search in.
+            path (list[Any]): The current path in the dictionary or list.
 
-        return keys
-
-    def search_deep_class(self, searchClass, includeGlobals=True):
+        Returns:
+            list[list[Any]]: A list of paths where the searchText was found.
         """
-        Search for a key in all parts of the template.
-        :return if searchText is "Ref", an array like ['Resources', 'myInstance', 'Properties', 'ImageId', 'Ref', 'Ec2ImageId']
-        """
-        results = []
-        if searchClass in self.__cache_search_deep_class:
-            results = self.__cache_search_deep_class[searchClass]
-        else:
-            results.extend(self._search_deep_class(searchClass, self.template, []))
-            self.__cache_search_deep_class[searchClass] = results
-
-        # Globals are removed during a transform.  They need to be checked manually
-        if includeGlobals:
-            pre_results = self._search_deep_keys(
-                searchClass, self.transform_pre.get("Globals"), []
-            )
-            for pre_result in pre_results:
-                results.append(["Globals"] + pre_result)
-
-        return results
-
-    # pylint: disable=dangerous-default-value
-    def _search_deep_keys(self, searchText: str | re.Pattern, cfndict, path):
-        """Search deep for keys and get their values"""
         keys = []
         if isinstance(cfndict, dict):
             for key in cfndict:
-                pathprop = path[:]
+                pathprop: Path = path[:]
                 pathprop.append(key)
                 if isinstance(searchText, str):
                     if key == searchText:
@@ -638,9 +407,18 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
     def search_deep_keys(
         self, searchText: str | re.Pattern, includeGlobals: bool = True
     ):
-        """
-        Search for a key in all parts of the template.
-        :return if searchText is "Ref", an array like ['Resources', 'myInstance', 'Properties', 'ImageId', 'Ref', 'Ec2ImageId']
+        """Search for a key in all parts of the template.
+
+        Args:
+            searchText (str | re.Pattern): The text or regular expression pattern to search for.
+            includeGlobals (bool): Whether to include globals in the search.
+
+        Returns:
+            liist[[Any]]: A list of paths where the searchText was found.
+
+        Example:
+            If searchText is "Ref", the return value could be something like
+            ['Resources', 'myInstance', 'Properties', 'ImageId', 'Ref', 'Ec2ImageId']
         """
         results = []
         results.extend(self._search_deep_keys(searchText, self.template, []))
@@ -653,17 +431,28 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
                 results.append(["Globals"] + pre_result)
         return results
 
-    def get_condition_values(self, template, path=[]):
-        """Evaluates conditions and brings back the values"""
-        LOGGER.debug("Get condition values...")
-        matches = []
+    def get_condition_values(self, template, path: Path | None) -> list[dict[str, Any]]:
+        """
+        Evaluates conditions in the provided CloudFormation template and returns the values.
+
+        Args:
+            template (list): The CloudFormation template to evaluate.
+            path (list, optional): The current path in the template. Defaults to an empty list.
+
+        Returns:
+            list: A list of dictionaries, where each dictionary contains the following keys:
+                - "Path": The path to the condition value in the template.
+                - "Value": The value of the condition.
+        """
+        path = path or []
+        matches: list[dict[str, Any]] = []
         if not isinstance(template, list):
             return matches
         if not len(template) == 3:
             return matches
 
         for index, item in enumerate(template[1:]):
-            result = {}
+            result: dict[str, Any] = {}
             result["Path"] = path[:] + [index + 1]
             if not isinstance(item, (dict, list)):
                 # Just straight values and pass them through
@@ -692,22 +481,34 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
                     result["Value"] = item
                     matches.append(result)
             else:
-                # Length longer than 1 means a list or object that should be fully returned
+                # Length longer than 1 means a list or object that
+                # should be fully returned
                 result["Value"] = item
                 matches.append(result)
 
         return matches
 
-    def get_values(self, obj, key, path=[]):
+    def get_values(self, obj, key, path: Path | None = None):
         """
-        Logic for getting the value of a key
-        Returns None if the item isn't found
-        Returns empty list if the item is found but Ref or GetAtt
-        Returns all the values as a list if condition
-        Returns the value if its just a string, int, boolean, etc.
+        Logic for getting the value of a key in the provided object.
 
+        Args:
+            obj (dict): The object to search for the key.
+            key (str): The key to search for in the object.
+            path (list, optional): The current path in the object. Defaults to an empty list.
+
+        Returns:
+            list: A list of dictionaries, where each dictionary contains the following keys:
+            - "Path": The path to the value in the object.
+            - "Value": The value found for the key.
+
+            Types of return values
+            - Returns None if the item isn't found
+            - Returns empty list if the item is found but Ref or GetAtt
+            - Returns all the values as a list if condition
+            - Returns the value if its just a string, int, boolean, etc.
         """
-        LOGGER.debug("Get the value for key %s in %s", key, obj)
+        path = path or []
         matches = []
 
         if not isinstance(obj, dict):
@@ -783,9 +584,8 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
 
         return matches
 
-    def _loc(self, obj):
+    def _loc(self, obj: Any) -> tuple[int, int, int, int]:
         """Return location of object"""
-        LOGGER.debug("Get location of object...")
         return (
             obj.start_mark.line,
             obj.start_mark.column,
@@ -794,7 +594,15 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
         )
 
     def get_sub_parameters(self, sub_string):
-        """Gets the parameters out of a Sub String"""
+        """
+        Gets the parameters out of a Sub String.
+
+        Args:
+            sub_string (str): The Sub string to extract parameters from.
+
+        Returns:
+            list: A list of the parameter names found in the Sub string.
+        """
         results = []
         if not isinstance(sub_string, str):
             return results
@@ -806,11 +614,20 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
 
         return results
 
-    def get_location_yaml(self, text, path):
+    def get_location_yaml(self, text: Any, path: Path):
         """
-        Get the location information
+        Get the location information for the given YAML text and path.
+
+        Args:
+            text (str): The YAML text to search.
+            path (list): The path to the location within the YAML text.
+
+        Returns:
+            dict or None: A dictionary containing the location information, or None if the location could not be found.
+            The dictionary has the following keys:
+                - "start_mark": A dictionary with "line" and "column" keys indicating the start of the location.
+                - "end_mark": A dictionary with "line" and "column" keys indicating the end of the location.
         """
-        LOGGER.debug("Get location of path %s", path)
         result = None
         if not path:
             result = self._loc(text)
@@ -848,59 +665,44 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
 
         return result
 
-    def check_resource_property(
-        self,
-        resource_type,
-        resource_property,
-        check_value=None,
-        check_ref=None,
-        check_find_in_map=None,
-        check_split=None,
-        check_join=None,
-        check_sub=None,
-        **kwargs,
-    ):
-        """Check Resource Properties"""
-        LOGGER.debug("Check property %s for %s", resource_property, resource_type)
-        matches = []
-        resources = self.get_resources(resource_type=resource_type)
-        for resource_name, resource_object in resources.items():
-            properties = resource_object.get("Properties", {})
-            if properties:
-                matches.extend(
-                    self.check_value(
-                        obj=properties,
-                        key=resource_property,
-                        path=["Resources", resource_name, "Properties"],
-                        check_value=check_value,
-                        check_ref=check_ref,
-                        check_find_in_map=check_find_in_map,
-                        check_split=check_split,
-                        check_join=check_join,
-                        check_sub=check_sub,
-                        **kwargs,
-                    )
-                )
-        return matches
-
     # pylint: disable=W0613,too-many-locals
     def check_value(
         self,
-        obj,
-        key,
-        path,
-        check_value=None,
-        check_ref=None,
-        check_get_att=None,
-        check_find_in_map=None,
-        check_split=None,
-        check_join=None,
-        check_import_value=None,
-        check_sub=None,
-        pass_if_null=False,
-        **kwargs,
-    ):
-        LOGGER.debug("Check value %s for %s", key, obj)
+        obj: dict[str, Any],
+        key: str,
+        path: Path,
+        check_value: CheckValueFn | None = None,
+        check_ref: CheckValueFn | None = None,
+        check_get_att: CheckValueFn | None = None,
+        check_find_in_map: CheckValueFn | None = None,
+        check_split: CheckValueFn | None = None,
+        check_join: CheckValueFn | None = None,
+        check_import_value: CheckValueFn | None = None,
+        check_sub: CheckValueFn | None = None,
+        pass_if_null: bool = False,
+        **kwargs: dict[str, Any],
+    ) -> list[RuleMatch]:
+        """
+        Check the value of a key in the provided object.
+
+        Args:
+            obj (dict): The object to check the value of.
+            key (str): The key to check the value of.
+            path (list): The path to the current location in the object.
+            check_value (callable, optional): A function to check the value of the key.
+            check_ref (callable, optional): A function to check the "Ref" function.
+            check_get_att (callable, optional): A function to check the "Fn::GetAtt" function.
+            check_find_in_map (callable, optional): A function to check the "Fn::FindInMap" function.
+            check_split (callable, optional): A function to check the "Fn::Split" function.
+            check_join (callable, optional): A function to check the "Fn::Join" function.
+            check_import_value (callable, optional): A function to check the "Fn::ImportValue" function.
+            check_sub (callable, optional): A function to check the "Fn::Sub" function.
+            pass_if_null (bool, optional): Whether to pass if the value is null. Defaults to False.
+            **kwargs (dict): Additional keyword arguments to pass to the check functions.
+
+        Returns:
+            list[RuleMatch]: A list of matches found during the check.
+        """
         matches = []
         values_obj = self.get_values(obj=obj, key=key)
         new_path = path[:] + [key]
@@ -925,10 +727,14 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
                 else:
                     if len(value) == 1:
                         for dict_name, _ in value.items():
-                            # If this is a function we shouldn't fall back to a check_value check
+                            # If this is a function we shouldn't fall
+                            # back to a check_value check
                             if dict_name in cfnlint.helpers.FUNCTIONS:
-                                # convert the function name from camel case to underscore
-                                # Example: Fn::FindInMap becomes check_find_in_map
+                                # convert the function name from camel case
+                                # to underscore
+                                # Example: Fn::FindInMap becomes
+                                # check_find_in_map
+                                # ruff: noqa: E501
                                 function_name = f'check_{camel_to_snake(dict_name.replace("Fn::", ""))}'
                                 if function_name == "check_ref":
                                     if check_ref:
@@ -936,7 +742,9 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
                                             check_ref(
                                                 value=value.get("Ref"),
                                                 path=new_path[:] + child_path + ["Ref"],
-                                                parameters=self.get_parameters(),
+                                                parameters=self.template.get(
+                                                    "Parameters", {}
+                                                ),
                                                 resources=self.get_resources(),
                                                 **kwargs,
                                             )
@@ -971,21 +779,24 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
 
         return matches
 
-    def is_resource_available(self, path, resource):
+    def is_resource_available(self, path: Path, resource: str) -> list[dict[str, bool]]:
         """
-        Compares a path to resource to see if its available
-        Returns scenarios that may result in the resource doesn't exist
-        Input:
-            Path: An array that is a Path to the object being checked
-            Resource: The resource being compared to
-        Output:
-            If the resource is available the result is an empty array []
-            If the resource is not available you will get a an array of Condition Names
-                and when that condition is True or False will result in the resource
-                not being available when trying to be associated.
-                [{'ConditionName'}: False]
+        Compares a path to a resource to see if it is available.
+
+        This function returns scenarios that may result in the resource not existing.
+
+        Args:
+            path (list): An array that is a path to the object being checked.
+            resource (str): The resource being compared.
+
+        Returns:
+            list: If the resource is available, the result is an empty list [].
+                If the resource is not available, the function returns a list of dictionaries,
+                where each dictionary represents a scenario where the resource is not available.
+                The dictionary keys are the condition names, and the values indicate whether
+                the condition is True or False.
         """
-        results = []
+        results: list[dict[str, bool]] = []
         path_conditions = self.get_conditions_from_path(self.template, path)
         resource_condition = (
             self.template.get("Resources", {}).get(resource, {}).get("Condition")
@@ -995,17 +806,18 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
             if not path_conditions:
                 return [{resource_condition: False}]
 
-            # resource conditions are always true.  If the same resource condition exists in the path
-            # with the True then nothing else matters
+            # resource conditions are always true.  If the same resource condition
+            # exists in the path with the True then nothing else matters
             if True in path_conditions.get(resource_condition, {False}):
                 return []
 
-            # resource conditions are always true.  If the same resource condition exists in the path
-            # with the False then nothing else matters
+            # resource conditions are always true.  If the same resource condition
+            # exists in the path with the False then nothing else matters
             if False in path_conditions.get(resource_condition, {True}):
-                return [path_conditions]
+                return [{resource_condition: False}]
 
-            # if any condition paths loop back on themselves with the opposite then its unreachable code
+            # if any condition paths loop back on themselves with the opposite
+            # then its unreachable code
             scenario = {}
             for condition_name, condition_bool in path_conditions.items():
                 if len(condition_bool) > 1:
@@ -1018,22 +830,28 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
         # if resource condition isn't available then the resource is available
         return results
 
-    def get_object_without_nested_conditions(self, obj, path, region=None):
+    def get_object_without_nested_conditions(
+        self, obj: dict | list, path: Path, region: str | None = None
+    ):
         """
         Get a list of object values without conditions included.
-        Evaluates deep into the object removing any nested conditions as well
+
+        Evaluates deep into the object removing any nested conditions as well.
+
+        Args:
+            obj (dict): The object to process.
+            path (list): The current path in the object.
+            region (str, optional): The AWS region to use for evaluating conditions. Defaults to None.
+
+        Returns:
+            list: A list of dictionaries, where each dictionary contains the following keys:
+                - "Scenario": The scenario for the object, or None if there are no conditions.
+                - "Object": The object with conditions removed.
         """
         results = []
         scenarios = self.get_condition_scenarios_below_path(path, False, region)
         if not isinstance(obj, (dict, list)):
             return results
-
-        if not scenarios:
-            if isinstance(obj, dict):
-                if len(obj) == 1:
-                    if obj.get("Ref") == "AWS::NoValue":
-                        return results
-            return [{"Scenario": None, "Object": obj}]
 
         def get_value(value, scenario):  # pylint: disable=R0911
             """Get the value based on the scenario resolving nesting"""
@@ -1052,7 +870,9 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
 
                 new_object = {}
                 for k, v in value.items():
-                    new_object[k] = get_value(v, scenario)
+                    new_v = get_value(v, scenario)
+                    if new_v is not None:
+                        new_object[k] = get_value(v, scenario)
                 return new_object
             if isinstance(value, list):
                 new_list = []
@@ -1065,6 +885,13 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
 
             return value
 
+        if not scenarios:
+            if isinstance(obj, dict):
+                if len(obj) == 1:
+                    if obj.get("Ref") == "AWS::NoValue":
+                        return [{"Scenario": None, "Object": {}}]
+            return [{"Scenario": None, "Object": get_value(obj, {})}]
+
         for scenario in scenarios:
             results.append({"Scenario": scenario, "Object": get_value(obj, scenario)})
 
@@ -1072,7 +899,19 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
 
     def get_value_from_scenario(self, obj, scenario):
         """
-        Get object values from a provided scenario
+        Get object values from a provided scenario.
+
+        This function recursively processes the provided object, resolving any
+        conditional logic (such as Fn::If) based on the given scenario.
+
+        Args:
+            obj (dict): The object to process.
+            scenario (dict): The scenario to use when resolving conditional logic.
+
+        Returns:
+            dict or list or any: The processed object, with conditional logic resolved.
+            The return type can be a dictionary, list, or any other data type,
+            depending on the structure of the input object.
         """
 
         def get_value(value, scenario):  # pylint: disable=R0911
@@ -1104,8 +943,8 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
 
             return value
 
-        result = cfnlint.dict_node({}, obj.start_mark, obj.end_mark)
         if isinstance(obj, dict):
+            result = dict_node({}, obj.start_mark, obj.end_mark)
             if len(obj) == 1:
                 if obj.get("Fn::If"):
                     new_value = get_value(obj, scenario)
@@ -1121,8 +960,17 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
                     new_value = get_value(value, scenario)
                     if new_value is not None:
                         result[key] = new_value
+            return result
+        if isinstance(obj, list):
+            result = list_node({}, obj.start_mark, obj.end_mark)
+            for item in obj:
+                element = get_value(item, scenario)
+                if element is not None:
+                    result.append(element)
 
-        return result
+            return result
+
+        return obj
 
     def get_object_without_conditions(self, obj, property_names=None, region=None):
         """
@@ -1155,47 +1003,87 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
                 }
             ]
         """
+        if not isinstance(obj, (dict, list)):
+            return [{"Scenario": None, "Object": obj}]
         property_names = [] if property_names is None else property_names
-        o = {}
-        if property_names:
-            for property_name in property_names:
-                o[property_name] = deepcopy(obj.get(property_name))
+        if getattr(obj, "start_mark", None):
+            start_mark = obj.start_mark
+            end_mark = obj.end_mark
         else:
-            o = deepcopy(obj)
+            start_mark = (0, 0)
+            end_mark = (0, 0)
+        if isinstance(obj, list):
+            o = list_node(deepcopy(obj), start_mark=start_mark, end_mark=end_mark)
+        else:
+            if property_names:
+                o = dict_node({}, start_mark=start_mark, end_mark=end_mark)
+                for property_name in property_names:
+                    o[property_name] = deepcopy(obj.get(property_name))
+            else:
+                o = dict_node(deepcopy(obj), start_mark=start_mark, end_mark=end_mark)
+
         results = []
 
-        scenarios = self.get_conditions_scenarios_from_object([o], region)
-        if not isinstance(obj, dict):
-            return results
+        scenarios = self.get_conditions_scenarios_from_object(o, region)
 
-        if not scenarios:
-            if isinstance(obj, dict):
+        if isinstance(obj, list):
+            if not scenarios:
+                return [
+                    {"Scenario": None, "Object": self.get_value_from_scenario(o, {})}
+                ]
+            for scenario in scenarios:
+                result_list = []
+                for o in obj:
+                    result_obj = self.get_value_from_scenario(o, scenario)
+                    if result_obj:
+                        result_list.append(result_obj)
+                results.append({"Scenario": scenario, "Object": result_list})
+        if isinstance(obj, dict):
+            if not scenarios:
                 if len(obj) == 1:
                     if obj.get("Ref") == "AWS::NoValue":
-                        return results
-            return [{"Scenario": None, "Object": obj}]
+                        return []
+                return [
+                    {"Scenario": None, "Object": self.get_value_from_scenario(o, {})}
+                ]
 
-        for scenario in scenarios:
-            result_obj = self.get_value_from_scenario(obj, scenario)
-            if result_obj:
-                results.append({"Scenario": scenario, "Object": result_obj})
+            for scenario in scenarios:
+                result_obj = self.get_value_from_scenario(o, scenario)
+                if result_obj:
+                    results.append({"Scenario": scenario, "Object": result_obj})
 
         return results
 
     def get_condition_scenarios_below_path(
-        self, path, include_if_in_function=False, region=None
-    ):
+        self,
+        path: Path,
+        include_if_in_function: bool = False,
+        region: str | None = None,
+    ) -> list[dict[str, bool]]:
         """
-        get Condition Scenarios from below path
+        Get all possible scenarios for the conditions in the provided object.
+
+        This function recursively processes the object, identifying any conditional
+        logic (such as Fn::If) and generating all possible scenarios based on the
+        conditions.
+
+        Args:
+            obj (dict): The object to process.
+            region (str, optional): The AWS region to use for evaluating conditions. Defaults to None.
+
+        Returns:
+            list: A list of dictionaries, where each dictionary represents a possible
+            scenario. The keys in the dictionary are the condition names, and the
+            values are boolean values indicating whether the condition is True or False.
         """
         fn_ifs = self.search_deep_keys("Fn::If")
-        results = {}
+        results: dict[str, set] = {}
         for fn_if in fn_ifs:
             if len(fn_if) >= len(path):
                 if path == fn_if[0 : len(path)]:
                     # This needs to handle items only below the Path
                     result = self.get_conditions_from_path(
-                        self.template, fn_if[0:-1], False, include_if_in_function
+                        self.template, fn_if[0:-1], True, include_if_in_function
                     )
                     for condition_name, condition_values in result.items():
                         if condition_name in results:
@@ -1203,11 +1091,23 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
                         else:
                             results[condition_name] = condition_values
 
-        return list(self.conditions.build_scenarios(list(results.keys()), region))
+        return list(self.conditions.build_scenarios(results, region))
 
     def get_conditions_scenarios_from_object(self, objs, region=None):
         """
-        Get condition from objects
+        Get the conditions that are applicable for the given path in the template.
+
+        This function recursively traverses the template, following the provided path,
+        and collects all the conditions that are relevant for the given path.
+
+        Args:
+            template (dict): The CloudFormation template to analyze.
+            path (list): The path within the template to analyze.
+
+        Returns:
+            dict: A dictionary where the keys are the condition names, and the values
+            are sets of boolean values (True or False) indicating the possible
+            outcomes for that condition.
         """
 
         def get_conditions_from_property(value):
@@ -1253,25 +1153,36 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
                     else:
                         con = con.union(get_conditions_from_property(v))
 
-        return list(self.conditions.build_scenarios(list(con), region))
+        return list(self.conditions.build_scenarios(dict.fromkeys(list(con)), region))
 
     def get_conditions_from_path(
         self,
-        text,
-        path,
-        include_resource_conditions=True,
-        include_if_in_function=True,
-        only_last=False,
-    ):
+        text: Any,
+        path: Path,
+        include_resource_conditions: bool = True,
+        include_if_in_function: bool = True,
+        only_last: bool = False,
+    ) -> dict[str, set[bool]]:
         """
         Parent function to handle resources with conditions.
-        Input:
-            text: The object to start processing through the Path
-            path: The path to recursively look for
-        Output:
-            An Object with keys being the Condition Names and the values are what
-                if its in the True or False part of the path.
-                {'condition': {True}}
+
+        This function recursively processes the provided text and path to identify
+        the conditions that are relevant for the given path.
+
+        Args:
+            text (dict): The object to start processing through the path.
+            path (list): The path to recursively look for conditions.
+            include_resource_conditions (bool, optional): Whether to include conditions
+                from the resource itself. Defaults to True.
+            include_if_in_function (bool, optional): Whether to include conditions
+                from Fn::If functions. Defaults to True.
+            only_last (bool, optional): Whether to only return the conditions for the
+                last element in the path. Defaults to False.
+
+        Returns:
+            dict: A dictionary where the keys are the condition names, and the values
+            are sets of boolean values (True or False) indicating the possible
+            outcomes for that condition.
         """
 
         results = self._get_conditions_from_path(
@@ -1289,8 +1200,12 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
         return results
 
     def _get_conditions_from_path(
-        self, text, path, include_if_in_function=True, only_last=False
-    ):
+        self,
+        text: Any,
+        path: Path,
+        include_if_in_function: bool = True,
+        only_last: bool = False,
+    ) -> dict[str, set[bool]]:
         """
         Get the conditions and their True/False value for the path provided
         Input:
@@ -1301,8 +1216,7 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
                 if its in the True or False part of the path.
                 {'condition': {True}}
         """
-        LOGGER.debug("Get conditions for path %s", path)
-        results = {}
+        results: dict[str, set[bool]] = {}
 
         def get_condition_name(value, num=None):
             """Test conditions for validity before providing the name"""
@@ -1346,7 +1260,7 @@ class Template:  # pylint: disable=R0904,too-many-lines,too-many-instance-attrib
                         results[c_r_k] = set()
                     results[c_r_k] = results[c_r_k].union(c_r_v)
 
-        except KeyError as _:
+        except KeyError:
             pass
 
         return results

@@ -16,7 +16,7 @@ class CacheClusterFailover(CloudFormationLintRule):
         "Evaluate Redis Cluster groups to make sure automatic failover is "
         "enabled when cluster mode is enabled"
     )
-    source_url = "https://github.com/awslabs/cfn-python-lint"
+    source_url = "https://github.com/awslabs/cfn-lint"
     tags = ["resources", "elasticcache"]
 
     def __init__(self):
@@ -54,14 +54,20 @@ class CacheClusterFailover(CloudFormationLintRule):
             if bool_compare(automatic_failover, False):
                 pathmessage = path[:] + ["AutomaticFailoverEnabled"]
                 if scenario is None:
-                    message = '"AutomaticFailoverEnabled" must be misssing or True when setting up a cluster at {0}'
+                    message = (
+                        '"AutomaticFailoverEnabled" must be misssing or True when'
+                        " setting up a cluster at {0}"
+                    )
                     results.append(
                         RuleMatch(
                             pathmessage, message.format("/".join(map(str, pathmessage)))
                         )
                     )
                 else:
-                    message = '"AutomaticFailoverEnabled" must be misssing or True when setting up a cluster when {0} at {1}'
+                    message = (
+                        '"AutomaticFailoverEnabled" must be misssing or True when'
+                        " setting up a cluster when {0} at {1}"
+                    )
                     scenario_text = " and ".join(
                         [f'when condition "{k}" is {v}' for (k, v) in scenario.items()]
                     )
@@ -80,7 +86,10 @@ class CacheClusterFailover(CloudFormationLintRule):
                 if num_cache_nodes <= 1:
                     pathmessage = path[:] + ["NumCacheClusters"]
                     if scenario is None:
-                        message = '"NumCacheClusters" must be greater than one when creating a cluster at {0}'
+                        message = (
+                            '"NumCacheClusters" must be greater than one when creating'
+                            " a cluster at {0}"
+                        )
                         results.append(
                             RuleMatch(
                                 pathmessage,
@@ -88,7 +97,10 @@ class CacheClusterFailover(CloudFormationLintRule):
                             )
                         )
                     else:
-                        message = '"NumCacheClusters" must be greater than one when creating a cluster when {0} at {1}'
+                        message = (
+                            '"NumCacheClusters" must be greater than one when creating'
+                            " a cluster when {0} at {1}"
+                        )
                         scenario_text = " and ".join(
                             [
                                 f'when condition "{k}" is {v}'
@@ -133,21 +145,21 @@ class CacheClusterFailover(CloudFormationLintRule):
             )
         return results
 
+    def _check_ref(self, value, path, **kwargs):
+        cfn = kwargs["cfn"]
+        properties = kwargs["properties"]
+        if value in cfn.get_resources():
+            return self.test_cluster_settings(properties, path, value, path, cfn)
+        return []
+
     def match_resource_properties(self, properties, _, path, cfn):
         """Check CloudFormation Properties"""
-        matches = []
 
-        parameter_groups = properties.get_safe("CacheParameterGroupName", "", path)
-        for parameter_group in parameter_groups:
-            pg_value = parameter_group[0]
-            pg_path = parameter_group[1]
-            if isinstance(pg_value, dict):
-                for pg_key, pg_resource in pg_value.items():
-                    if pg_key == "Ref" and pg_resource in cfn.get_resources():
-                        matches.extend(
-                            self.test_cluster_settings(
-                                properties, path, pg_resource, pg_path, cfn
-                            )
-                        )
-
-        return matches
+        return cfn.check_value(
+            properties,
+            "CacheParameterGroupName",
+            path,
+            check_ref=self._check_ref,
+            properties=properties,
+            cfn=cfn,
+        )

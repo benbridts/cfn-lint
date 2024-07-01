@@ -26,11 +26,18 @@ class TestFormatters(BaseCliTestCase):
             result = result.decode("utf8")
 
         self.assertIn(
-            '<testcase name="I1002 Template size limit" url="https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/cloudformation-limits.html"/>',
+            (
+                '<testcase name="I1002 Validate approaching the template size limit"'
+                ' url="https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/cloudformation-limits.html"/>'
+            ),
             result,
         )
         self.assertIn(
-            '<testcase name="I1003 Template description limit" url="https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/cloudformation-limits.html"/>',
+            (
+                '<testcase name="I1003 Validate if we are approaching the '
+                'max size of a description" '
+                'url="https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/cloudformation-limits.html"/>'
+            ),
             result,
         )
 
@@ -50,6 +57,9 @@ class TestFormatters(BaseCliTestCase):
             result = result.decode("utf8")
 
         self.assertEqual(
-            "Cfn-lint scanned 2 templates against 2 rules and found 0 errors, 0 warnings, and 0 informational violations",
+            (
+                "Cfn-lint scanned 2 templates against 2 rules and found 0 errors, 0"
+                " warnings, and 0 informational violations"
+            ),
             result.strip(),
         )

@@ -5,7 +5,9 @@ SPDX-License-Identifier: MIT-0
 
 import regex as re
 
+from cfnlint._typing import RuleMatches
 from cfnlint.rules import CloudFormationLintRule, RuleMatch
+from cfnlint.template import Template
 
 
 class Default(CloudFormationLintRule):
@@ -13,7 +15,10 @@ class Default(CloudFormationLintRule):
 
     id = "E2015"
     shortdesc = "Default value is within parameter constraints"
-    description = "Making sure the parameters have a default value inside AllowedValues, MinValue, MaxValue, AllowedPattern"
+    description = (
+        "Making sure the parameters have a default value inside AllowedValues,"
+        " MinValue, MaxValue, AllowedPattern"
+    )
     source_url = "https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/parameters-section-structure.html"
     tags = ["parameters"]
 
@@ -125,7 +130,7 @@ class Default(CloudFormationLintRule):
     def is_cdl(self, paramvalue):
         return paramvalue.get("Type") == "CommaDelimitedList"
 
-    def match(self, cfn):
+    def match(self, cfn: Template) -> RuleMatches:
         matches = []
 
         for paramname, paramvalue in cfn.get_parameters_valid().items():

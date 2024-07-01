@@ -3,39 +3,93 @@ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 """
 
-from test.unit.rules import BaseRuleTestCase
+from __future__ import annotations
 
+from collections import deque
+
+import pytest
+
+from cfnlint.context import Path
+from cfnlint.jsonschema import ValidationError
+
+# ruff: noqa: E501
 from cfnlint.rules.resources.RetentionPeriodOnResourceTypesWithAutoExpiringContent import (
-    RetentionPeriodOnResourceTypesWithAutoExpiringContent,  # pylint: disable=E0401
+    RetentionPeriodOnResourceTypesWithAutoExpiringContent,
 )
 
 
-class TestRetentionPeriodOnResourceTypesWithAutoExpiringContent(BaseRuleTestCase):
-    """Test base template"""
+@pytest.fixture(scope="module")
+def rule():
+    rule = RetentionPeriodOnResourceTypesWithAutoExpiringContent()
+    yield rule
 
-    def setUp(self):
-        """Setup"""
-        super(TestRetentionPeriodOnResourceTypesWithAutoExpiringContent, self).setUp()
-        self.collection.register(
-            RetentionPeriodOnResourceTypesWithAutoExpiringContent()
+
+@pytest.fixture
+def template():
+    return {
+        "Resources": {
+            "MySqs": {
+                "Type": "AWS::SQS::Queue",
+            }
+        }
+    }
+
+
+@pytest.fixture
+def path():
+    return Path(
+        path=deque(["Resources", "MySqs", "Properties"]),
+        cfn_path=deque(["Resources", "AWS::SQS::Queue", "Properties"]),
+    )
+
+
+@pytest.mark.parametrize(
+    "name,instance,expected",
+    [
+        (
+            "Valid version",
+            {"MessageRetentionPeriod": "90"},
+            [],
+        ),
+        (
+            "Invalid type",
+            [],
+            [],
+        ),
+        (
+            "Invalid when not specified",
+            {},
+            [
+                ValidationError(
+                    (
+                        "'MessageRetentionPeriod' is a required property (The "
+                        "default retention period will delete the data after "
+                        "a pre-defined time. Set an explicit values to avoid "
+                        "data loss on resource)"
+                    ),
+                    rule=RetentionPeriodOnResourceTypesWithAutoExpiringContent(),
+                    schema_path=deque(["required"]),
+                    validator="required",
+                    validator_value=["MessageRetentionPeriod"],
+                    instance={},
+                )
+            ],
+        ),
+    ],
+)
+def test_validate(name, instance, expected, rule, validator):
+    errors = list(rule.validate(validator, False, instance, {}))
+    # we use error counts in this one as the instance types are
+    # always changing so we aren't going to hold ourselves up by that
+    assert errors == expected, f"Test {name!r} got {errors!r}"
+
+
+def test_validate_with_no_path(rule, validator):
+    validator = validator.evolve(
+        context=validator.context.path.evolve(
+            path=Path(path=deque([]), cfn_path=deque([]))
         )
-        self.success_templates = [
-            "test/fixtures/templates/good/resources/sqs/retention_period.yaml",
-            "test/fixtures/templates/good/resources/rds/retention_period.yaml",
-        ]
+    )
 
-    def test_file_positive(self):
-        """Test Positive"""
-        self.helper_file_positive()
-
-    def test_file_negative_alias(self):
-        """Test failure"""
-        self.helper_file_negative(
-            "test/fixtures/templates/bad/resources/sqs/retention_period.yaml", 3
-        )
-
-    def test_file_negative_rds(self):
-        """Test failure"""
-        self.helper_file_negative(
-            "test/fixtures/templates/bad/resources/rds/retention_period.yaml", 1
-        )
+    errors = list(rule.validate(validator, False, {}, {}))
+    assert errors == []

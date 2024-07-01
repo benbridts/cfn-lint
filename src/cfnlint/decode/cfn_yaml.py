@@ -1,6 +1,9 @@
 """
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
+
+# Code is taken from jsonschema package and adapted CloudFormation use
+# https://github.com/yaml/pyyaml/blob/a2d19c0234866dc9d4d55abf3009699c258bb72f/lib/yaml/scanner.py#L46
 """
 
 import fileinput
@@ -14,8 +17,9 @@ from yaml.reader import Reader
 from yaml.resolver import Resolver
 from yaml.scanner import Scanner
 
-import cfnlint
-from cfnlint.decode.node import dict_node, list_node, str_node, sub_node
+from cfnlint.decode.node import dict_node, list_node, str_node
+from cfnlint.rules import Match
+from cfnlint.rules.errors import ParseError
 
 try:
     from yaml._yaml import CParser as Parser  # pylint: disable=ungrouped-imports,
@@ -38,7 +42,7 @@ class CfnParseError(ConstructorError):
     """
 
     def __init__(self, filename, errors):
-        if isinstance(errors, cfnlint.rules.Match):
+        if isinstance(errors, Match):
             errors = [errors]
 
         # Call the base class constructor with the parameters it needs
@@ -50,14 +54,14 @@ class CfnParseError(ConstructorError):
 
 
 def build_match(filename, message, line_number, column_number, key):
-    return cfnlint.rules.Match(
-        line_number + 1,
-        column_number + 1,
-        line_number + 1,
-        column_number + 1 + len(key),
-        filename,
-        cfnlint.rules.ParseError(),
+    return Match.create(
         message=message,
+        filename=filename,
+        rule=ParseError(),
+        linenumber=line_number + 1,
+        columnnumber=column_number + 1,
+        linenumberend=line_number + 1,
+        columnnumberend=column_number + 1 + len(key),
     )
 
 
@@ -94,7 +98,10 @@ class NodeConstructor(SafeConstructor):
                     [
                         build_match(
                             filename=self.filename,
-                            message=f"Null key {key_node.value!r} not supported (line {key_node.start_mark.line + 1})",
+                            message=(
+                                f"Null key {key_node.value!r} not supported "
+                                f"(line {key_node.start_mark.line + 1})"
+                            ),
                             line_number=key_node.start_mark.line,
                             column_number=key_node.start_mark.column,
                             key=key_node.value,
@@ -108,14 +115,20 @@ class NodeConstructor(SafeConstructor):
                             [
                                 build_match(
                                     filename=self.filename,
-                                    message=f'Duplicate found "{key}" (line {key_dup.start_mark.line + 1})',
+                                    message=(
+                                        f'Duplicate found "{key}" (line'
+                                        f" {key_dup.start_mark.line + 1})"
+                                    ),
                                     line_number=key_dup.start_mark.line,
                                     column_number=key_dup.start_mark.column,
                                     key=key,
                                 ),
                                 build_match(
                                     filename=self.filename,
-                                    message=f'Duplicate found "{key}" (line {key_node.start_mark.line + 1})',
+                                    message=(
+                                        f'Duplicate found "{key}" (line'
+                                        f" {key_node.start_mark.line + 1})"
+                                    ),
                                     line_number=key_node.start_mark.line,
                                     column_number=key_node.start_mark.column,
                                     key=key,
@@ -126,7 +139,10 @@ class NodeConstructor(SafeConstructor):
                         matches.append(
                             build_match(
                                 filename=self.filename,
-                                message=f'Duplicate found "{key}" (line {key_node.start_mark.line + 1})',
+                                message=(
+                                    f'Duplicate found "{key}" (line'
+                                    f" {key_node.start_mark.line + 1})"
+                                ),
                                 line_number=key_node.start_mark.line,
                                 column_number=key_node.start_mark.column,
                                 key=key,
@@ -140,7 +156,10 @@ class NodeConstructor(SafeConstructor):
                     [
                         build_match(
                             filename=self.filename,
-                            message=f'Unhashable type "{key}" (line {key.start_mark.line + 1})',
+                            message=(
+                                f'Unhashable type "{key}" (line'
+                                f" {key.start_mark.line + 1})"
+                            ),
                             line_number=key.start_mark.line,
                             column_number=key.start_mark.column,
                             key=key,
@@ -155,10 +174,6 @@ class NodeConstructor(SafeConstructor):
             )
 
         (obj,) = SafeConstructor.construct_yaml_map(self, node)
-
-        if len(mapping) == 1:
-            if "Fn::Sub" in mapping:
-                return sub_node(obj, node.start_mark, node.end_mark)
 
         return dict_node(obj, node.start_mark, node.end_mark)
 
@@ -186,8 +201,33 @@ NodeConstructor.add_constructor(  # type: ignore
 )
 
 
+class _Scanner(Scanner):
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ESCAPE_REPLACEMENTS = {
+            "0": "\0",
+            "a": "\x07",
+            "b": "\x08",
+            "t": "\x09",
+            "\t": "\x09",
+            "n": "\x0A",
+            "v": "\x0B",
+            "f": "\x0C",
+            "r": "\x0D",
+            "e": "\x1B",
+            " ": "\x20",
+            '"': '"',
+            "\\": "\\",
+            "N": "\x85",
+            "_": "\xA0",
+            "L": "\u2028",
+            "P": "\u2029",
+        }
+
+
 # pylint: disable=too-many-ancestors
-class MarkedLoader(Reader, Scanner, Parser, Composer, NodeConstructor, Resolver):
+class MarkedLoader(Reader, _Scanner, Parser, Composer, NodeConstructor, Resolver):
     """
     Class for marked loading YAML
     """
@@ -196,7 +236,7 @@ class MarkedLoader(Reader, Scanner, Parser, Composer, NodeConstructor, Resolver)
 
     def __init__(self, stream, filename):
         Reader.__init__(self, stream)
-        Scanner.__init__(self)
+        _Scanner.__init__(self)
         if cyaml:
             Parser.__init__(self, stream)
         else:
@@ -238,9 +278,6 @@ def multi_constructor(loader, tag_suffix, node):
         constructor = loader.construct_mapping
     else:
         raise f"Bad tag: !{tag_suffix}"
-
-    if tag_suffix == "Fn::Sub":
-        return sub_node({tag_suffix: constructor(node)}, node.start_mark, node.end_mark)
 
     return dict_node({tag_suffix: constructor(node)}, node.start_mark, node.end_mark)
 

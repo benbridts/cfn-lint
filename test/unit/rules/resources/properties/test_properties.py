@@ -3,88 +3,74 @@ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 """
 
-import json
-from test.unit.rules import BaseRuleTestCase
+from collections import deque
+from unittest.mock import MagicMock, patch
 
-import cfnlint.core
-import cfnlint.helpers
-from cfnlint.rules.resources.properties.Properties import (
-    Properties,  # pylint: disable=E0401
+import pytest
+
+from cfnlint.jsonschema import ValidationError
+from cfnlint.rules.resources.properties.Properties import Properties
+from cfnlint.schema._schema import Schema
+
+
+@pytest.fixture(scope="module")
+def rule():
+    rule = Properties()
+    yield rule
+
+
+@pytest.mark.parametrize(
+    "name,instance,patches,expected",
+    [
+        (
+            "Valid results",
+            {
+                "Type": "MyType",
+            },
+            [(["us-east-1"], Schema({"typeName": "MyType", "properties": {}}))],
+            [],
+        ),
+        (
+            "Invalid type for Type",
+            {
+                "Type": {},
+            },
+            [],
+            [],
+        ),
+        (
+            "Valid type but no required fields",
+            {
+                "Type": "MyType",
+            },
+            [(["us-east-1"], Schema({"typeName": "MyType", "required": ["Name"]}))],
+            [
+                ValidationError(
+                    "'Name' is a required property",
+                    validator="required",
+                    path=deque(["Properties"]),
+                    schema_path=deque(["required"]),
+                )
+            ],
+        ),
+    ],
 )
+def test_validate(name, instance, patches, expected, rule, validator):
+    schema_manager = MagicMock()
+    schema_manager.get_resource_schemas_by_regions.return_value = patches
 
+    with patch(
+        "cfnlint.rules.resources.properties.Properties.PROVIDER_SCHEMA_MANAGER",
+        schema_manager,
+    ):
+        errs = list(rule.validate(validator, {}, instance, {}))
 
-class TestResourceProperties(BaseRuleTestCase):
-    """Test Resource Properties"""
+        assert errs == expected, f"Test {name!r} got {errs!r}"
 
-    def setUp(self):
-        """Setup"""
-        super(TestResourceProperties, self).setUp()
-        self.collection.register(Properties())
-        self.success_templates = [
-            "test/fixtures/templates/good/resource_properties.yaml",
-            "test/fixtures/templates/good/resources/properties/templated_code.yaml",
-            "test/fixtures/templates/good/resources/properties/properties_nested_if.yaml",
-        ]
-
-    def test_file_positive(self):
-        """Test Positive"""
-        self.helper_file_positive()
-
-    def test_file_negative(self):
-        """Test failure"""
-        self.helper_file_negative("test/fixtures/templates/bad/generic.yaml", 9)
-
-    def test_file_negative_2(self):
-        """Failure test"""
-        self.helper_file_negative(
-            "test/fixtures/templates/bad/object_should_be_list.yaml", 4
+    if patches:
+        schema_manager.get_resource_schemas_by_regions.assert_called_once()
+        schema_manager.get_resource_schemas_by_regions.assert_called_with(
+            instance.get("Type"), ["us-east-1"]
         )
-
-    def test_file_negative_3(self):
-        """Failure test"""
-        self.helper_file_negative(
-            "test/fixtures/templates/bad/resource_properties.yaml", 8
-        )
-
-    def test_E3012_in_bad_template(self):
-        """Test E3012 in known-bad template"""
-        filename = "test/fixtures/templates/bad/resource_properties.yaml"
-        (args, _, _) = cfnlint.core.get_args_filenames(["--template", filename])
-        (template, rules, _) = cfnlint.core.get_template_rules(filename, args)
-        results = cfnlint.core.run_checks(filename, template, rules, ["us-east-1"])
-        matched_rule_ids = [r.rule.id for r in results]
-        self.assertIn("E3012", matched_rule_ids)
-
-    def test_E3012_match_has_extra_attributes(self):
-        """Test E3012 in has custom attributes"""
-        filename = "test/fixtures/templates/bad/resource_properties.yaml"
-        (args, _, _) = cfnlint.core.get_args_filenames(["--template", filename])
-        (template, rules, _) = cfnlint.core.get_template_rules(filename, args)
-        results = cfnlint.core.run_checks(filename, template, rules, ["us-east-1"])
-        custom_attrs = ["actual_type", "expected_type"]
-        for r in results:
-            if r.rule.id == "E3012":
-                for ca in custom_attrs:
-                    assert hasattr(r, ca), "Attribute {} was not found".format(ca)
-
-
-class TestSpecifiedCustomResourceProperties(TestResourceProperties):
-    """Repeat Resource Properties tests with Custom Resource override spec provided"""
-
-    def setUp(self):
-        """Setup"""
-        super(TestSpecifiedCustomResourceProperties, self).setUp()
-        # Add a Spec override that specifies the Custom::SpecifiedCustomResource type
-        with open("test/fixtures/templates/override_spec/custom.json") as fp:
-            custom_spec = json.load(fp)
-        cfnlint.helpers.set_specs(custom_spec)
-        # Reset Spec override after test
-        self.addCleanup(cfnlint.helpers.initialize_specs)
-
-    # ... all TestResourceProperties test cases are re-run with override spec ...
-
-    def test_file_negative_custom(self):
-        """Additional failure test for specified Custom Resource validation"""
-        self.helper_file_negative(
-            "test/fixtures/templates/bad/resources/properties/custom.yaml", 2
-        )
+    else:
+        schema_manager.get_resource_schemas_by_regions.assert_not_called()

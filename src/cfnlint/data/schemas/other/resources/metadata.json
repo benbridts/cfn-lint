@@ -1,0 +1,19 @@
+{
+ "additionalProperties": {
+  "type": [
+   "object",
+   "string"
+  ]
+ },
+ "properties": {
+  "AWS::CloudFormation::Init": {
+   "additionalProperties": true,
+   "properties": {},
+   "type": "object"
+  }
+ },
+ "type": [
+  "object",
+  "array"
+ ]
+}

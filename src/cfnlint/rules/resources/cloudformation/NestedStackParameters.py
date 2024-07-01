@@ -5,8 +5,10 @@ SPDX-License-Identifier: MIT-0
 
 import os
 
+from cfnlint._typing import RuleMatches
 from cfnlint.decode import decode
 from cfnlint.rules import CloudFormationLintRule, RuleMatch
+from cfnlint.template.template import Template
 
 
 class NestedStackParameters(CloudFormationLintRule):
@@ -18,7 +20,7 @@ class NestedStackParameters(CloudFormationLintRule):
         "Evalute if parameters for a nested stack are specified and "
         "if parameters are specified for a nested stack that aren't required."
     )
-    source_url = "https://github.com/awslabs/cfn-python-lint"
+    source_url = "https://github.com/awslabs/cfn-lint"
     tags = ["resources", "cloudformation"]
 
     def __init__(self):
@@ -29,7 +31,7 @@ class NestedStackParameters(CloudFormationLintRule):
     def __get_template_parameters(self, filename):
         try:
             (tmp, matches) = decode(filename)
-        except:  # pylint: disable=bare-except
+        except:  # noqa: E722
             return None
         if matches:
             return None
@@ -40,7 +42,10 @@ class NestedStackParameters(CloudFormationLintRule):
         matches = []
         for key in set(template_parameters.keys()) - set(nested_parameters.keys()):
             if scenario is None:
-                message = 'Specified parameter "{0}" doesn\'t exist in nested stack template at {1}'
+                message = (
+                    'Specified parameter "{0}" doesn\'t exist in nested stack template'
+                    " at {1}"
+                )
                 matches.append(
                     RuleMatch(
                         path + [key],
@@ -48,7 +53,10 @@ class NestedStackParameters(CloudFormationLintRule):
                     )
                 )
             else:
-                message = 'Specified parameter "{0}" doesn\'t exist in nested stack template {1}'
+                message = (
+                    'Specified parameter "{0}" doesn\'t exist in nested stack'
+                    " template {1}"
+                )
                 scenario_text = " and ".join(
                     [f'when condition "{k}" is {v}' for (k, v) in scenario.items()]
                 )
@@ -73,43 +81,51 @@ class NestedStackParameters(CloudFormationLintRule):
 
         return matches
 
-    def match_resource_properties(self, properties, _, path, cfn):
+    def match(self, cfn: Template) -> RuleMatches:
         """Check CloudFormation Properties"""
         matches = []
+        resources = cfn.get_resources("AWS::CloudFormation::Stack")
+        for resource_name, attributes in resources.items():
+            properties = attributes.get("Properties", {})
+            # when template is passed via cat (or equivalent filename is none)
+            if cfn.filename:
+                base_dir = os.path.dirname(os.path.abspath(cfn.filename))
 
-        # when template is passed via cat (or equivalent filename is none)
-        if cfn.filename:
-            base_dir = os.path.dirname(os.path.abspath(cfn.filename))
+                parameter_groups = cfn.get_object_without_conditions(
+                    obj=properties, property_names=["TemplateURL", "Parameters"]
+                )
 
-            parameter_groups = cfn.get_object_without_conditions(
-                obj=properties, property_names=["TemplateURL", "Parameters"]
-            )
-            for parameter_group in parameter_groups:
-                obj = parameter_group.get("Object")
-                template_url = obj.get("TemplateURL")
-                if isinstance(template_url, str):
-                    if not (
-                        template_url.startswith("http://")
-                        or template_url.startswith("https://")
-                        or template_url.startswith("s3://")
-                    ):
-                        template_path = os.path.normpath(
-                            os.path.join(base_dir, template_url)
-                        )
-                        nested_parameters = self.__get_template_parameters(
-                            template_path
-                        )
-                        template_parameters = obj.get("Parameters")
-                        if isinstance(nested_parameters, dict) and isinstance(
-                            template_parameters, dict
+                for parameter_group in parameter_groups:
+                    obj = parameter_group.get("Object")
+                    template_url = obj.get("TemplateURL")
+                    if isinstance(template_url, str):
+                        if not (
+                            template_url.startswith("http://")
+                            or template_url.startswith("https://")
+                            or template_url.startswith("s3://")
                         ):
-                            matches.extend(
-                                self.__compare_objects(
-                                    template_parameters=template_parameters,
-                                    nested_parameters=nested_parameters,
-                                    path=path + ["Parameters"],
-                                    scenario=parameter_group.get("Scenario"),
-                                )
+                            template_path = os.path.normpath(
+                                os.path.join(base_dir, template_url)
                             )
+                            nested_parameters = self.__get_template_parameters(
+                                template_path
+                            )
+                            template_parameters = obj.get("Parameters")
+                            if isinstance(nested_parameters, dict) and isinstance(
+                                template_parameters, dict
+                            ):
+                                matches.extend(
+                                    self.__compare_objects(
+                                        template_parameters=template_parameters,
+                                        nested_parameters=nested_parameters,
+                                        path=[
+                                            "Resources",
+                                            resource_name,
+                                            "Properties",
+                                            "Parameters",
+                                        ],
+                                        scenario=parameter_group.get("Scenario"),
+                                    )
+                                )
 
         return matches

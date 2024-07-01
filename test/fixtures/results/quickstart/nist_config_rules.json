@@ -1,25 +1,26 @@
 [
     {
         "Filename": "test/fixtures/templates/quickstart/nist_config_rules.yaml",
+        "Id": "79f1c0f4-0f2f-5851-916c-03cdb5b2d45b",
         "Level": "Warning",
         "Location": {
             "End": {
-                "ColumnNumber": 17,
-                "LineNumber": 5
+                "ColumnNumber": 3,
+                "LineNumber": 8
             },
             "Path": [
                 "Conditions",
                 "cApprovedAMIsRule",
                 "Fn::Not",
-                0,
-                "Fn::Equals"
+                0
             ],
             "Start": {
                 "ColumnNumber": 7,
                 "LineNumber": 5
             }
         },
-        "Message": "Fn::Equals element will alway return true",
+        "Message": "['', ''] will always return True or False",
+        "ParentId": null,
         "Rule": {
             "Description": "Validate Fn::Equals to see if its comparing two strings or two equal items. While this works it may not be intended.",
             "Id": "W8003",
@@ -29,6 +30,7 @@
     },
     {
         "Filename": "test/fixtures/templates/quickstart/nist_config_rules.yaml",
+        "Id": "96ea5faf-f8dc-9d44-5f65-699672170646",
         "Level": "Warning",
         "Location": {
             "End": {
@@ -45,7 +47,8 @@
                 "LineNumber": 35
             }
         },
-        "Message": "Obsolete DependsOn on resource (rConfigRulesLambdaRole), dependency already enforced by a \"Fn:GetAtt\" at Resources/rAMIComplianceFunction/Properties/Role/Fn::GetAtt",
+        "Message": "'rConfigRulesLambdaRole' dependency already enforced by a 'GetAtt' at 'Resources/rAMIComplianceFunction/Properties/Role'",
+        "ParentId": null,
         "Rule": {
             "Description": "Check if DependsOn is specified if not needed. A Ref or a Fn::GetAtt already is an implicit dependency.",
             "Id": "W3005",
@@ -55,6 +58,7 @@
     },
     {
         "Filename": "test/fixtures/templates/quickstart/nist_config_rules.yaml",
+        "Id": "7ff2be29-cb12-6e79-76f3-62271cab9643",
         "Level": "Error",
         "Location": {
             "End": {
@@ -72,16 +76,18 @@
                 "LineNumber": 94
             }
         },
-        "Message": "Deprecated runtime (nodejs) specified. Updating disabled since 2016-10-31. Please consider updating to nodejs20.x",
+        "Message": "Runtime 'nodejs' was deprecated on '2016-10-31'. Creation was disabled on '2016-10-31' and update on '2016-10-31'. Please consider updating to 'nodejs20.x'",
+        "ParentId": null,
         "Rule": {
-            "Description": "Check if an EOL Lambda Runtime is specified and give an error if used. ",
-            "Id": "E2531",
-            "ShortDescription": "Check if EOL Lambda Function Runtimes are used",
+            "Description": "Check if an EOL Lambda Runtime is specified and you cannot update the function",
+            "Id": "E2533",
+            "ShortDescription": "Check if Lambda Function Runtimes are updatable",
             "Source": "https://docs.aws.amazon.com/lambda/latest/dg/runtime-support-policy.html"
         }
     },
     {
         "Filename": "test/fixtures/templates/quickstart/nist_config_rules.yaml",
+        "Id": "cad3b9a8-45a2-9ed9-2e0a-2f0948cfbf8d",
         "Level": "Error",
         "Location": {
             "End": {
@@ -99,16 +105,18 @@
                 "LineNumber": 95
             }
         },
-        "Message": "Property Resources/rAMIComplianceFunction/Properties/Timeout should be of type Integer",
+        "Message": "'30' is not of type 'integer'",
+        "ParentId": null,
         "Rule": {
             "Description": "Checks resource property values with Primitive Types for values that match those types.",
             "Id": "E3012",
             "ShortDescription": "Check resource properties values",
-            "Source": "https://github.com/aws-cloudformation/cfn-python-lint/blob/main/docs/cfn-resource-specification.md#valueprimitivetype"
+            "Source": "https://github.com/aws-cloudformation/cfn-lint/blob/main/docs/cfn-schema-specification.md#type"
         }
     },
     {
         "Filename": "test/fixtures/templates/quickstart/nist_config_rules.yaml",
+        "Id": "d99634ac-04a8-0d39-c51e-678245cc5701",
         "Level": "Warning",
         "Location": {
             "End": {
@@ -125,7 +133,8 @@
                 "LineNumber": 98
             }
         },
-        "Message": "Obsolete DependsOn on resource (rConfigRulesLambdaRole), dependency already enforced by a \"Fn:GetAtt\" at Resources/rCloudTrailValidationFunction/Properties/Role/Fn::GetAtt",
+        "Message": "'rConfigRulesLambdaRole' dependency already enforced by a 'GetAtt' at 'Resources/rCloudTrailValidationFunction/Properties/Role'",
+        "ParentId": null,
         "Rule": {
             "Description": "Check if DependsOn is specified if not needed. A Ref or a Fn::GetAtt already is an implicit dependency.",
             "Id": "W3005",
@@ -135,6 +144,7 @@
     },
     {
         "Filename": "test/fixtures/templates/quickstart/nist_config_rules.yaml",
+        "Id": "3344c0d5-b056-cec5-1f85-b76e7c47ec5a",
         "Level": "Error",
         "Location": {
             "End": {
@@ -152,16 +162,18 @@
                 "LineNumber": 159
             }
         },
-        "Message": "Deprecated runtime (nodejs) specified. Updating disabled since 2016-10-31. Please consider updating to nodejs20.x",
+        "Message": "Runtime 'nodejs' was deprecated on '2016-10-31'. Creation was disabled on '2016-10-31' and update on '2016-10-31'. Please consider updating to 'nodejs20.x'",
+        "ParentId": null,
         "Rule": {
-            "Description": "Check if an EOL Lambda Runtime is specified and give an error if used. ",
-            "Id": "E2531",
-            "ShortDescription": "Check if EOL Lambda Function Runtimes are used",
+            "Description": "Check if an EOL Lambda Runtime is specified and you cannot update the function",
+            "Id": "E2533",
+            "ShortDescription": "Check if Lambda Function Runtimes are updatable",
             "Source": "https://docs.aws.amazon.com/lambda/latest/dg/runtime-support-policy.html"
         }
     },
     {
         "Filename": "test/fixtures/templates/quickstart/nist_config_rules.yaml",
+        "Id": "a2072bb1-9b4b-07fd-46a0-0dc43e7e286b",
         "Level": "Error",
         "Location": {
             "End": {
@@ -179,12 +191,13 @@
                 "LineNumber": 160
             }
         },
-        "Message": "Property Resources/rCloudTrailValidationFunction/Properties/Timeout should be of type Integer",
+        "Message": "'30' is not of type 'integer'",
+        "ParentId": null,
         "Rule": {
             "Description": "Checks resource property values with Primitive Types for values that match those types.",
             "Id": "E3012",
             "ShortDescription": "Check resource properties values",
-            "Source": "https://github.com/aws-cloudformation/cfn-python-lint/blob/main/docs/cfn-resource-specification.md#valueprimitivetype"
+            "Source": "https://github.com/aws-cloudformation/cfn-lint/blob/main/docs/cfn-schema-specification.md#type"
         }
     }
 ]

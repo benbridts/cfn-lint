@@ -3,7 +3,9 @@ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 """
 
+from cfnlint._typing import Path, RuleMatches
 from cfnlint.rules import CloudFormationLintRule, RuleMatch
+from cfnlint.template import Template
 
 
 class CodepipelineStages(CloudFormationLintRule):
@@ -30,7 +32,10 @@ class CodepipelineStages(CloudFormationLintRule):
         matches = []
 
         if len(stages) < 2:
-            message = f"CodePipeline has {len(stages)} stages. There must be at least two stages."
+            message = (
+                f"CodePipeline has {len(stages)} stages. There must be at least two"
+                " stages."
+            )
             matches.append(
                 RuleMatch(path, self._format_error_message(message, scenario))
             )
@@ -98,7 +103,10 @@ class CodepipelineStages(CloudFormationLintRule):
                     )
 
         if not categories - set(["Source"]):
-            message = "At least one stage in pipeline must contain an action that is not a source action."
+            message = (
+                "At least one stage in pipeline must contain an action that is not a"
+                " source action."
+            )
             matches.append(
                 RuleMatch(path, self._format_error_message(message, scenario))
             )
@@ -113,7 +121,10 @@ class CodepipelineStages(CloudFormationLintRule):
             stage_name = stage.get("Name")
             if isinstance(stage_name, str):
                 if stage_name in stage_names:
-                    message = f"All stage names within a pipeline must be unique. ({stage_name})"
+                    message = (
+                        "All stage names within a pipeline must be unique."
+                        f" ({stage_name})"
+                    )
                     matches.append(
                         RuleMatch(
                             path + [sidx, "Name"],
@@ -125,14 +136,15 @@ class CodepipelineStages(CloudFormationLintRule):
                 self.logger.debug("Found non string for stage name: %s", stage_name)
         return matches
 
-    def match(self, cfn):
+    def match(self, cfn: Template) -> RuleMatches:
         """Check CodePipeline stages"""
         matches = []
 
-        resources = cfn.get_resource_properties(["AWS::CodePipeline::Pipeline"])
-        for resource in resources:
-            path = resource["Path"] + ["Stages"]
-            properties = resource["Value"]
+        for resource_name, resource_value in cfn.get_resources(
+            "AWS::CodePipeline::Pipeline"
+        ).items():
+            path: Path = ["Resources", resource_name, "Properties", "Stages"]
+            properties = resource_value.get("Properties", {})
 
             s_stages = cfn.get_object_without_nested_conditions(
                 properties.get("Stages"), path
@@ -161,8 +173,10 @@ class CodepipelineStages(CloudFormationLintRule):
                     )
                 except AttributeError as err:
                     self.logger.debug(
-                        "Got AttributeError. Should have been caught by generic linting. "
-                        "Ignoring the error here: %s",
+                        (
+                            "Got AttributeError. Should have been caught by generic"
+                            " linting. Ignoring the error here: %s"
+                        ),
                         str(err),
                     )
 

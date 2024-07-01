@@ -1,6 +1,7 @@
 [
     {
         "Filename": "test/fixtures/templates/quickstart/nist_iam.yaml",
+        "Id": "7f3b5a1d-7735-3d58-e7d2-19c699a46299",
         "Level": "Warning",
         "Location": {
             "End": {
@@ -17,7 +18,8 @@
                 "LineNumber": 57
             }
         },
-        "Message": "Obsolete DependsOn on resource (rIAMAdminRole), dependency already enforced by a \"Ref\" at Resources/rIAMAdminProfile/Properties/Roles/0/Ref",
+        "Message": "'rIAMAdminRole' dependency already enforced by a 'Ref' at 'Resources/rIAMAdminProfile/Properties/Roles/0'",
+        "ParentId": null,
         "Rule": {
             "Description": "Check if DependsOn is specified if not needed. A Ref or a Fn::GetAtt already is an implicit dependency.",
             "Id": "W3005",
@@ -27,6 +29,7 @@
     },
     {
         "Filename": "test/fixtures/templates/quickstart/nist_iam.yaml",
+        "Id": "e601a063-5d3f-2b9a-330c-f75f10fba4c9",
         "Level": "Warning",
         "Location": {
             "End": {
@@ -43,7 +46,8 @@
                 "LineNumber": 137
             }
         },
-        "Message": "Obsolete DependsOn on resource (rInstanceOpsRole), dependency already enforced by a \"Ref\" at Resources/rInstanceOpsProfile/Properties/Roles/0/Ref",
+        "Message": "'rInstanceOpsRole' dependency already enforced by a 'Ref' at 'Resources/rInstanceOpsProfile/Properties/Roles/0'",
+        "ParentId": null,
         "Rule": {
             "Description": "Check if DependsOn is specified if not needed. A Ref or a Fn::GetAtt already is an implicit dependency.",
             "Id": "W3005",
@@ -53,11 +57,12 @@
     },
     {
         "Filename": "test/fixtures/templates/quickstart/nist_iam.yaml",
+        "Id": "99273eea-4208-d5b5-e641-516b59429087",
         "Level": "Warning",
         "Location": {
             "End": {
-                "ColumnNumber": 11,
-                "LineNumber": 228
+                "ColumnNumber": 19,
+                "LineNumber": 165
             },
             "Path": [
                 "Resources",
@@ -65,14 +70,16 @@
                 "Properties",
                 "PolicyDocument",
                 "Statement",
-                0
+                0,
+                "Action"
             ],
             "Start": {
                 "ColumnNumber": 13,
                 "LineNumber": 165
             }
         },
-        "Message": "Invalid permission \"Get*\" for \"appstream\" found in permissions",
+        "Message": "'get*' is not one of ['associateappblockbuilderappblock', 'associateapplicationfleet', 'associateapplicationtoentitlement', 'associatefleet', 'batchassociateuserstack', 'batchdisassociateuserstack', 'copyimage', 'createappblock', 'createappblockbuilder', 'createappblockbuilderstreamingurl', 'createapplication', 'createdirectoryconfig', 'createentitlement', 'createfleet', 'createimagebuilder', 'createimagebuilderstreamingurl', 'createstack', 'createstreamingurl', 'createupdatedimage', 'createusagereportsubscription', 'createuser', 'deleteappblock', 'deleteappblockbuilder', 'deleteapplication', 'deletedirectoryconfig', 'deleteentitlement', 'deletefleet', 'deleteimage', 'deleteimagebuilder', 'deleteimagepermissions', 'deletestack', 'deleteusagereportsubscription', 'deleteuser', 'describeappblockbuilderappblockassociations', 'describeappblockbuilders', 'describeappblocks', 'describeapplicationfleetassociations', 'describeapplications', 'describedirectoryconfigs', 'describeentitlements', 'describefleets', 'describeimagebuilders', 'describeimagepermissions', 'describeimages', 'describesessions', 'describestacks', 'describeusagereportsubscriptions', 'describeuserstackassociations', 'describeusers', 'disableuser', 'disassociateappblockbuilderappblock', 'disassociateapplicationfleet', 'disassociateapplicationfromentitlement', 'disassociatefleet', 'enableuser', 'expiresession', 'listassociatedfleets', 'listassociatedstacks', 'listentitledapplications', 'listtagsforresource', 'startappblockbuilder', 'startfleet', 'startimagebuilder', 'stopappblockbuilder', 'stopfleet', 'stopimagebuilder', 'stream', 'tagresource', 'untagresource', 'updateappblockbuilder', 'updateapplication', 'updatedirectoryconfig', 'updateentitlement', 'updatefleet', 'updateimagepermissions', 'updatestack']",
+        "ParentId": null,
         "Rule": {
             "Description": "Check for valid IAM Permissions",
             "Id": "W3037",
@@ -82,6 +89,7 @@
     },
     {
         "Filename": "test/fixtures/templates/quickstart/nist_iam.yaml",
+        "Id": "32acc4c2-bca8-1937-0eb6-1ba9e6e252e5",
         "Level": "Warning",
         "Location": {
             "End": {
@@ -98,7 +106,8 @@
                 "LineNumber": 236
             }
         },
-        "Message": "Obsolete DependsOn on resource (rReadOnlyAdminRole), dependency already enforced by a \"Ref\" at Resources/rReadOnlyAdminProfile/Properties/Roles/0/Ref",
+        "Message": "'rReadOnlyAdminRole' dependency already enforced by a 'Ref' at 'Resources/rReadOnlyAdminProfile/Properties/Roles/0'",
+        "ParentId": null,
         "Rule": {
             "Description": "Check if DependsOn is specified if not needed. A Ref or a Fn::GetAtt already is an implicit dependency.",
             "Id": "W3005",
@@ -108,6 +117,7 @@
     },
     {
         "Filename": "test/fixtures/templates/quickstart/nist_iam.yaml",
+        "Id": "bd3386c9-b22d-fe71-273d-8502c632de9d",
         "Level": "Warning",
         "Location": {
             "End": {
@@ -124,7 +134,8 @@
                 "LineNumber": 312
             }
         },
-        "Message": "Obsolete DependsOn on resource (rSysAdminRole), dependency already enforced by a \"Ref\" at Resources/rSysAdminProfile/Properties/Roles/0/Ref",
+        "Message": "'rSysAdminRole' dependency already enforced by a 'Ref' at 'Resources/rSysAdminProfile/Properties/Roles/0'",
+        "ParentId": null,
         "Rule": {
             "Description": "Check if DependsOn is specified if not needed. A Ref or a Fn::GetAtt already is an implicit dependency.",
             "Id": "W3005",

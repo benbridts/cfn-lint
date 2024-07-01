@@ -3,156 +3,174 @@ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 """
 
-import logging
+from __future__ import annotations
 
-import cfnlint.helpers
-from cfnlint.rules import CloudFormationLintRule, RuleMatch
+from collections import deque
+from typing import Any, Sequence
 
-LOGGER = logging.getLogger("cfnlint")
+import regex as re
+
+from cfnlint.helpers import ensure_list, is_types_compatible
+from cfnlint.jsonschema import ValidationError, ValidationResult, Validator
+from cfnlint.rules.functions._BaseFn import BaseFn, all_types
+from cfnlint.schema import PROVIDER_SCHEMA_MANAGER
 
 
-class GetAtt(CloudFormationLintRule):
+class GetAtt(BaseFn):
     """Check if GetAtt values are correct"""
 
     id = "E1010"
     shortdesc = "GetAtt validation of parameters"
-    description = "Validates that GetAtt parameters are to valid resources and properties of those resources"
+    description = (
+        "Validates that GetAtt parameters are to valid resources and properties of"
+        " those resources"
+    )
     source_url = "https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/intrinsic-function-reference-getatt.html"
     tags = ["functions", "getatt"]
 
-    def __init__(self):
-        """Init"""
-        super().__init__()
-        self.propertytypes = []
-        self.resourcetypes = []
+    def __init__(self) -> None:
+        super().__init__("Fn::GetAtt", all_types)
 
-    def initialize(self, cfn):
-        resourcespecs = cfnlint.helpers.RESOURCE_SPECS[cfn.regions[0]]
-        self.resourcetypes = resourcespecs["ResourceTypes"]
-        self.propertytypes = resourcespecs["PropertyTypes"]
+    def schema(self, validator, instance) -> dict[str, Any]:
+        resource_functions = []
+        if validator.context.transforms.has_language_extensions_transform():
+            resource_functions = ["Ref"]
 
-    def match(self, cfn):
-        matches = []
+        return {
+            "type": ["string", "array"],
+            "minItems": 2,
+            "maxItems": 2,
+            "fn_items": [
+                {
+                    "functions": resource_functions,
+                    "schema": {
+                        "type": ["string"],
+                    },
+                },
+                {
+                    "functions": ["Ref"],
+                    "schema": {
+                        "type": ["string"],
+                    },
+                },
+            ],
+        }
 
-        getatts = cfn.search_deep_keys("Fn::GetAtt")
-        valid_getatts = cfn.get_valid_getatts()
+    def _resolve_getatt(
+        self,
+        validator: Validator,
+        key: str,
+        value: Any,
+        instance: Any,
+        s: Any,
+        paths: Sequence[Any],
+    ) -> ValidationResult:
 
-        valid_attribute_functions = ["Ref"]
-
-        for getatt in getatts:
-            if len(getatt[-1]) < 2:
-                message = "Invalid GetAtt for {0}"
-                matches.append(
-                    RuleMatch(getatt, message.format("/".join(map(str, getatt[:-1]))))
+        for resource_name, resource_name_validator, _ in validator.resolve_value(
+            value[0]
+        ):
+            for err in self.fix_errors(
+                resource_name_validator.descend(
+                    resource_name,
+                    {"enum": list(validator.context.resources.keys())},
+                    path=key,
                 )
-                continue
-            if isinstance(getatt[-1], str):
-                resname, restype = getatt[-1].split(".", 1)
+            ):
+                err.path.append(paths[0])
+                if err.instance != value[0]:
+                    err.message = err.message + f" when {value[0]!r} is resolved"
+                yield err
+                break
             else:
-                resname = None
-                restype = None
-                if isinstance(getatt[-1][1], str):
-                    resname = getatt[-1][0]
-                    restype = ".".join(getatt[-1][1:])
-                elif isinstance(getatt[-1][1], dict):
-                    # You can ref the secondary part of a getatt
-
-                    resname = getatt[-1][0]
-                    restype = getatt[-1][1]
-                    if len(restype) == 1:
-                        for k in restype.keys():
-                            if k not in valid_attribute_functions:
-                                message = 'GetAtt only supports functions "{0}" for attributes at {1}'
-                                matches.append(
-                                    RuleMatch(
-                                        getatt,
-                                        message.format(
-                                            ", ".join(
-                                                map(str, valid_attribute_functions)
-                                            ),
-                                            "/".join(map(str, getatt[:-1])),
-                                        ),
-                                    )
-                                )
-                    else:
-                        message = "Invalid GetAtt structure {0} at {1}"
-                        matches.append(
-                            RuleMatch(
-                                getatt,
-                                message.format(
-                                    getatt[-1], "/".join(map(str, getatt[:-1]))
-                                ),
+                for attribute_name, _, _ in validator.resolve_value(value[1]):
+                    if all(
+                        not (bool(re.fullmatch(each, attribute_name)))
+                        for each in validator.context.resources[resource_name].get_atts
+                    ):
+                        err = ValidationError(
+                            (
+                                f"{attribute_name!r} is not one of "
+                                f"{validator.context.resources[resource_name].get_atts!r}"
+                            ),
+                            validator=self.fn.py,
+                            path=deque([self.fn.name, 1]),
+                        )
+                        if attribute_name != value[1]:
+                            err.message = (
+                                err.message + f" when {value[1]!r} is resolved"
                             )
-                        )
+                        yield err
+                        continue
 
-                    # setting restype to None as we can't validate that anymore
-                    restype = None
-                else:
-                    message = "Invalid GetAtt structure {0} at {1}"
-                    matches.append(
-                        RuleMatch(
-                            getatt,
-                            message.format(getatt[-1], "/".join(map(str, getatt[:-1]))),
-                        )
+                    # because of the complexities of schemas ($ref, anyOf, allOf, etc.)
+                    # we will simplify the validator to just have a type check
+                    # then we will provide a simple value to represent the type from the
+                    # getAtt
+                    evolved = validator.evolve(schema=s)  # type: ignore
+                    evolved.validators = {  # type: ignore
+                        "type": validator.validators.get("type"),  # type: ignore
+                    }
+
+                    getatts = validator.cfn.get_valid_getatts()
+                    t = validator.context.resources[resource_name].type
+                    pointer = getatts.match(
+                        validator.context.regions[0], [resource_name, attribute_name]
                     )
 
-            # only check resname if its set.  if it isn't it is because of bad structure
-            # and an error is already provided
-            if resname:
-                if not isinstance(resname, str):
-                    message = "Invalid GetAtt structure {0} at {1}"
-                    matches.append(
-                        RuleMatch(
-                            getatt,
-                            message.format(getatt[-1], "/".join(map(str, getatt[:-1]))),
-                        )
-                    )
-                    continue
-                if resname in valid_getatts:
-                    if restype is not None:
-                        # Check for maps
-                        restypeparts = restype.split(".")
-                        if (
-                            restypeparts[0] in valid_getatts[resname]
-                            and len(restypeparts) >= 2
+                    for (
+                        _,
+                        schema,
+                    ) in PROVIDER_SCHEMA_MANAGER.get_resource_schemas_by_regions(
+                        t, validator.context.regions
+                    ):
+                        getatt_schema = schema.resolver.resolve_cfn_pointer(pointer)
+
+                        if not getatt_schema.get("type") or not s.get("type"):
+                            continue
+
+                        schema_types = ensure_list(getatt_schema.get("type"))
+
+                        types = ensure_list(s.get("type"))
+
+                        if is_types_compatible(
+                            types, schema_types, validator.context.strict_types
                         ):
-                            if (
-                                valid_getatts[resname][restypeparts[0]].get("Type")
-                                != "Map"
-                            ):
-                                message = "Invalid GetAtt {0}.{1} for resource {2}"
-                                matches.append(
-                                    RuleMatch(
-                                        getatt[:-1],
-                                        message.format(resname, restype, getatt[1]),
-                                    )
-                                )
-                            else:
-                                continue
-                        if (
-                            restype not in valid_getatts[resname]
-                            and "*" not in valid_getatts[resname]
-                        ):
-                            message = "Invalid GetAtt {0}.{1} for resource {2}"
-                            matches.append(
-                                RuleMatch(
-                                    getatt[:-1],
-                                    message.format(resname, restype, getatt[1]),
-                                )
-                            )
-                else:
-                    modules = cfn.get_modules()
-                    if any(resname.startswith(s) for s in modules.keys()):
-                        LOGGER.debug(
-                            "Will consider valid getatt %s because it references a resource within a module",
-                            resname,
-                        )
-                    else:
-                        message = "Invalid GetAtt {0}.{1} for resource {2}"
-                        matches.append(
-                            RuleMatch(
-                                getatt, message.format(resname, restype, getatt[1])
-                            )
+                            continue
+
+                        reprs = ", ".join(repr(type) for type in types)
+                        yield ValidationError(
+                            (f"{instance!r} is not of type {reprs}"),
+                            validator=self.fn.py,
+                            path=deque([self.fn.name]),
+                            schema_path=deque(["type"]),
                         )
 
-        return matches
+    def fn_getatt(
+        self, validator: Validator, s: Any, instance: Any, schema: Any
+    ) -> ValidationResult:
+        errs = list(super().validate(validator, s, instance, schema))
+        if errs:
+            yield from iter(errs)
+            return
+
+        key, value = self.key_value(instance)
+        paths: list[int | None] = [0, 1]
+        if validator.is_type(value, "string"):
+            paths = [None, None]
+            value = value.split(".", 1)
+
+        errs = list(
+            self._resolve_getatt(
+                self.validator(validator), key, value, instance, s, paths
+            )
+        )
+        if errs:
+            yield from iter(errs)
+            return
+
+        keyword = validator.context.path.cfn_path_string
+        for rule in self.child_rules.values():
+            if rule is None:
+                continue
+            if keyword in rule.keywords or "*" in rule.keywords:  # type: ignore
+                yield from rule.validate(validator, s, value, s)  # type: ignore

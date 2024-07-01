@@ -10,9 +10,9 @@ from cfnlint.decode import convert_dict
 from cfnlint.template import Template
 from cfnlint.template.transforms._language_extensions import (
     _ForEach,
+    _ForEachCollection,
     _ForEachValue,
     _ForEachValueFnFindInMap,
-    _ForEachValueRef,
     _ResolveError,
     _Transform,
     _TypeError,
@@ -27,6 +27,7 @@ class TestForEach(TestCase):
         _ForEach(
             "key", [{"Ref": "Parameter"}, {"Ref": "AWS::NotificationArns"}, {}], {}
         )
+        _ForEach("key", ["AccountId", {"Ref": "AccountIds"}, {}], {})
 
     def test_wrong_type(self):
         with self.assertRaises(_TypeError):
@@ -54,6 +55,32 @@ class TestForEach(TestCase):
             _ForEach("key", ["foo", ["bar"], []], {})
 
 
+class TestForEachCollection(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.cfn = Template(
+            "",
+            {
+                "Parameters": {
+                    "AccountIds": {
+                        "Type": "CommaDelimitedList",
+                    },
+                },
+            },
+            regions=["us-west-2"],
+        )
+
+    def test_valid(self):
+        fec = _ForEachCollection({"Ref": "AccountIds"})
+        self.assertListEqual(
+            list(fec.values(self.cfn, {})),
+            [
+                {"Fn::Select": [0, {"Ref": "AccountIds"}]},
+                {"Fn::Select": [1, {"Ref": "AccountIds"}]},
+            ],
+        )
+
+
 class TestRef(TestCase):
     def setUp(self) -> None:
         self.template_obj = convert_dict(
@@ -74,6 +101,14 @@ class TestRef(TestCase):
                     "SecurityGroups": {
                         "Type": "List<AWS::EC2::Subnet::Id>",
                         "AllowedValues": ["sg-12345678, sg-87654321"],
+                    },
+                    "AccountIds": {
+                        "Type": "CommaDelimitedList",
+                    },
+                    "SSMParameter": {
+                        "Type": "AWS::SSM::Parameter::Value<String>",
+                        "Default": "/global/account/accounttype",
+                        "AllowedValues": ["/global/account/accounttype"],
                     },
                 },
             }
@@ -115,6 +150,19 @@ class TestRef(TestCase):
         fe = _ForEachValue.create({"Ref": "SecurityGroups"})
         self.assertEqual(fe.value(self.cfn), ["sg-12345678", "sg-87654321"])
 
+        fe = _ForEachValue.create({"Ref": "AccountIds"})
+        self.assertEqual(
+            fe.value(self.cfn),
+            [
+                {"Fn::Select": [0, {"Ref": "AccountIds"}]},
+                {"Fn::Select": [1, {"Ref": "AccountIds"}]},
+            ],
+        )
+
+        fe = _ForEachValue.create({"Ref": "SSMParameter"})
+        with self.assertRaises(_ResolveError):
+            fe.value(self.cfn)
+
 
 class TestFindInMap(TestCase):
     def setUp(self) -> None:
@@ -130,9 +178,23 @@ class TestFindInMap(TestCase):
                         "Default": "Production",
                     },
                     "Key": {"Type": "String", "AllowedValues": ["Names"]},
+                    "List": {"Type": "CommaDelimitedList", "Default": "foo,bar"},
                 },
                 "Mappings": {
                     "Bucket": {"Production": {"Names": ["foo", "bar"]}},
+                    "AnotherBucket": {"Production": {"Names": ["a", "b"]}},
+                    "Config": {
+                        "DBInstances": {
+                            "Development": "1",
+                            "Stage": ["1", "2"],
+                            "Production": ["1", "2", "3"],
+                        },
+                        "Instances": {
+                            "Development": "A",
+                            "Stage": ["A", "B"],
+                            "Production": ["A", "B", "C"],
+                        },
+                    },
                 },
             }
         )
@@ -168,6 +230,30 @@ class TestFindInMap(TestCase):
             {
                 "Fn::FindInMap": [
                     {"Ref": "MapName"},
+                    {"Ref": "MapName"},
+                    {"Ref": "MapName"},
+                    {"DefaultValue": ["one", "two"]},
+                ]
+            }
+        )
+        self.assertListEqual(fe.value(self.cfn), ["one", "two"])
+
+        fe = _ForEachValue.create(
+            {
+                "Fn::FindInMap": [
+                    {"Ref": "MapName"},
+                    {"Ref": "MapName"},
+                    {"Ref": "MapName"},
+                    {"DefaultValue": {"Ref": "List"}},
+                ]
+            }
+        )
+        self.assertListEqual(fe.value(self.cfn), ["foo", "bar"])
+
+        fe = _ForEachValue.create(
+            {
+                "Fn::FindInMap": [
+                    {"Ref": "MapName"},
                     {"Ref": "Environment"},
                     {"Ref": "Key"},
                 ]
@@ -181,6 +267,15 @@ class TestFindInMap(TestCase):
 
         with self.assertRaises(_ValueError):
             _ForEachValueFnFindInMap("", ["foo"])
+
+        with self.assertRaises(_TypeError):
+            _ForEachValueFnFindInMap("", ["", "", "", []])
+
+        with self.assertRaises(_ValueError):
+            _ForEachValueFnFindInMap("", ["", "", "", {"Default": "Bad"}])
+
+        with self.assertRaises(_ValueError):
+            _ForEachValueFnFindInMap("", ["", "", "", {"Foo": "Bar", "Bar": "Foo"}])
 
     def test_find_in_map_values_with_default(self):
         map = _ForEachValueFnFindInMap(
@@ -198,6 +293,30 @@ class TestFindInMap(TestCase):
             self.assertEqual(map.value(self.cfn, None, False, True), "bar")
         with self.assertRaises(_ResolveError):
             map.value(self.cfn, None, False, False)
+
+    def test_second_key_resolution(self):
+        map = _ForEachValueFnFindInMap("a", ["Config", {"Ref": "Value"}, "Production"])
+
+        self.assertEqual(
+            map.value(self.cfn, {"Value": "DBInstances"}, False, True), ["1", "2", "3"]
+        )
+
+        self.assertEqual(
+            map.value(self.cfn, {"Value": "Instances"}, False, True), ["A", "B", "C"]
+        )
+
+    def test_find_in_map_values_without_default_resolve_error(self):
+        map = _ForEachValueFnFindInMap(
+            "a", ["Bucket", "Production", {"Ref": "SSMParameter"}]
+        )
+
+        self.assertEqual(map.value(self.cfn, None, False, True), ["foo", "bar"])
+
+        map = _ForEachValueFnFindInMap(
+            "a", ["Config", "DBInstances", {"Ref": "SSMParameter"}]
+        )
+
+        self.assertEqual(map.value(self.cfn, None, False, True), ["1", "2"])
 
     def test_mapping_not_found(self):
         map = _ForEachValueFnFindInMap(
@@ -411,6 +530,76 @@ class TestTransform(TestCase):
 
         result = deepcopy(self.result)
         result["Parameters"] = parameters
+        self.assertDictEqual(
+            template,
+            result,
+        )
+
+    def test_transform_list_parameter(self):
+        template_obj = deepcopy(self.template_obj)
+        parameters = {"AccountIds": {"Type": "CommaDelimitedList"}}
+        template_obj["Parameters"] = parameters
+
+        nested_set(
+            template_obj,
+            [
+                "Resources",
+                "Fn::ForEach::SpecialCharacters",
+                1,
+            ],
+            {"Ref": "AccountIds"},
+        )
+        nested_set(
+            template_obj,
+            [
+                "Resources",
+                "Fn::ForEach::SpecialCharacters",
+                2,
+            ],
+            {
+                "S3Bucket&{Identifier}": {
+                    "Type": "AWS::S3::Bucket",
+                    "Properties": {
+                        "BucketName": {"Ref": "Identifier"},
+                        "Tags": [
+                            {"Key": "Name", "Value": {"Fn::Sub": "Name-${Identifier}"}},
+                        ],
+                    },
+                }
+            },
+        )
+        cfn = Template(filename="", template=template_obj, regions=["us-east-1"])
+        matches, template = language_extension(cfn)
+        self.assertListEqual(matches, [])
+
+        result = deepcopy(self.result)
+        result["Parameters"] = parameters
+        result["Resources"]["S3Bucket5096"] = {
+            "Properties": {
+                "BucketName": {"Fn::Select": [1, {"Ref": "AccountIds"}]},
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "Name-5096",
+                    },
+                ],
+            },
+            "Type": "AWS::S3::Bucket",
+        }
+        result["Resources"]["S3Bucketa72a"] = {
+            "Properties": {
+                "BucketName": {"Fn::Select": [0, {"Ref": "AccountIds"}]},
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "Name-a72a",
+                    },
+                ],
+            },
+            "Type": "AWS::S3::Bucket",
+        }
+        del result["Resources"]["S3Bucketab"]
+        del result["Resources"]["S3Bucketcd"]
         self.assertDictEqual(
             template,
             result,
